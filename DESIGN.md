@@ -19,6 +19,12 @@ Each test uses a fixed seed, overridable with `RAFTKV_TEST_SEED`, and prints it
 on failure. The seed reproduces random decisions for the same call order, but
 cannot reproduce nondeterministic goroutine scheduling by itself. The cluster
 helper uses a node adapter; election and replication tests use real nodes.
+The unreliable-network regression test keeps 10% per-message loss and random
+delays up to 50 ms enabled during partitions, simulated leader crashes, and
+convergence. It compares applied entries at each index, including after restart;
+stopping an in-process node models a crash but is not a forced process kill.
+Run it and the backtracking tests repeatedly with
+`go test -race -count=100 -run 'TestUnreliablePartitionsAndLeaderCrashes|TestFastBacktrackingThousands|TestBacktrackHints' ./internal/raft`.
 
 ## Election implementation and concurrency
 
@@ -46,8 +52,12 @@ higher term, so clients must not treat its role alone as a linearizable lease.
 term, and leadership status without waiting for commit; `Propose` additionally
 accepts a context and reports errors. Application-level client responses must
 wait for commitment and application. Each leader has at most one AppendEntries
-RPC in flight per follower; failures retry on the next heartbeat, and log
-inconsistencies decrement `nextIndex` and retry immediately. Current-term
+RPC in flight per follower; failures retry on the next heartbeat. For an
+inconsistent previous entry, the follower returns the conflicting term and its
+first index, or its log length plus one if the previous index is missing. The
+leader jumps to the index after its own last entry in that term, or to the
+follower's conflict index when the term is absent. Hints that cannot make
+backward progress fall back to decrementing `nextIndex`. Current-term
 entries advance the leader's commit index only after a majority replicates them;
 earlier entries become committed indirectly. Followers persist log changes
 before acknowledging them and never overwrite an already committed entry.
@@ -133,7 +143,7 @@ last new entry when `leaderCommit` is greater.
   entry has been committed and applied. If a follower is behind, send entries
   starting at its `nextIndex`, including the preceding index and term. On
   success update its `nextIndex` and `matchIndex`; on a consistency failure
-  decrement `nextIndex` and retry. Advance `commitIndex` to an index N greater
+  use the conflict hint to backtrack and retry. Advance `commitIndex` to an index N greater
   than the current commit index when a majority have `matchIndex >= N` and
   the entry at N is from the current term.
 

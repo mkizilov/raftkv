@@ -69,7 +69,7 @@ func (s *nodeState) replicate(peer transport.NodeID) {
 			state.inflight[peer] = false
 			if err != nil { return }
 			if !response.Success {
-				if state.nextIndex[peer] > 1 { state.nextIndex[peer]-- }
+				state.nextIndex[peer] = state.backtrack(state.nextIndex[peer], response)
 				state.replicate(peer)
 				return
 			}
@@ -80,6 +80,20 @@ func (s *nodeState) replicate(peer transport.NodeID) {
 			if matched < uint64(len(state.log)) { state.replicate(peer) }
 		})
 	})
+}
+
+// backtrack finds the leader's last entry in the conflicting term, or uses the
+// follower's first index in that term (or its end + 1 if it is too short).
+func (s *nodeState) backtrack(next uint64, response transport.AppendEntriesResponse) uint64 {
+	if next <= 1 { return 1 }
+	target := response.ConflictIndex
+	if response.HasConflictTerm {
+		for i := uint64(len(s.log)); i > 0; i-- {
+			if s.termAt(i) == response.ConflictTerm { target = i + 1; break }
+		}
+	}
+	if target == 0 || target >= next { return next - 1 }
+	return target
 }
 
 func (s *nodeState) advanceCommit() {

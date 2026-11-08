@@ -278,7 +278,18 @@ func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesReq
 		s.role = Follower
 		s.votes = nil
 		s.reset(s.electionTimeout())
-		if req.PrevLogIndex > uint64(len(s.log)) || s.termAt(req.PrevLogIndex) != req.PrevLogTerm { return response, nil }
+		if req.PrevLogIndex > uint64(len(s.log)) {
+			response.ConflictIndex = uint64(len(s.log)) + 1
+			return response, nil
+		}
+		if s.termAt(req.PrevLogIndex) != req.PrevLogTerm {
+			if req.PrevLogIndex == 0 { response.ConflictIndex = 1; return response, nil }
+			response.ConflictTerm = s.termAt(req.PrevLogIndex)
+			response.HasConflictTerm = true
+			response.ConflictIndex = req.PrevLogIndex
+			for response.ConflictIndex > 1 && s.termAt(response.ConflictIndex-1) == response.ConflictTerm { response.ConflictIndex-- }
+			return response, nil
+		}
 		for i, entry := range req.Entries {
 			index := req.PrevLogIndex + uint64(i) + 1
 			if index <= uint64(len(s.log)) && s.termAt(index) == entry.Term { continue }
