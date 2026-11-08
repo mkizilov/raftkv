@@ -19,7 +19,8 @@ peers='1=127.0.0.1:21800@127.0.0.1:21801,2=127.0.0.1:21802@127.0.0.1:21803,3=127
 for id in 1 2 3; do
   raft_port=$((21800 + (id - 1) * 2))
   client_port=$((raft_port + 1))
-  "$work/raftkv-server" -id "$id" -raft-listen "127.0.0.1:$raft_port" -client-listen "127.0.0.1:$client_port" -peers "$peers" -data-dir "$work/node-$id" &
+  http_port=$((21805 + id))
+  "$work/raftkv-server" -id "$id" -raft-listen "127.0.0.1:$raft_port" -client-listen "127.0.0.1:$client_port" -http-listen "127.0.0.1:$http_port" -peers "$peers" -data-dir "$work/node-$id" &
   pids="$pids $!"
 done
 printf '%s\n' 'Client endpoints: 127.0.0.1:21801, 127.0.0.1:21803, 127.0.0.1:21805 (Ctrl-C to stop; data is temporary).'

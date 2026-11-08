@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"strconv"
 
 	"github.com/you/raftkv/internal/raft"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -76,6 +79,7 @@ type Server struct {
 	applied chan struct{}
 	err error
 	state image // owned exclusively by the apply goroutine
+	observer raft.Observer
 }
 
 func New(config raft.Config, snapshotThreshold uint64) (*Server, error) {
@@ -85,10 +89,14 @@ func New(config raft.Config, snapshotThreshold uint64) (*Server, error) {
 	node, err := raft.NewNode(config)
 	if err != nil { return nil, err }
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{node: node, apply: apply, threshold: snapshotThreshold, ctx: ctx, cancel: cancel, done: make(chan struct{}), reads: make(chan readQuery), watches: make(chan watchQuery), applied: make(chan struct{}), pending: make(map[requestID]map[*waiter]struct{}), state: image{Format: 1, HistoryFormat: 1, Values: make(map[string]Result), Requests: make(map[string]map[uint64]record)}}, nil
+	return &Server{node: node, apply: apply, threshold: snapshotThreshold, ctx: ctx, cancel: cancel, done: make(chan struct{}), reads: make(chan readQuery), watches: make(chan watchQuery), applied: make(chan struct{}), pending: make(map[requestID]map[*waiter]struct{}), observer: config.Observer, state: image{Format: 1, HistoryFormat: 1, Values: make(map[string]Result), Requests: make(map[string]map[uint64]record)}}, nil
 }
 
 func (s *Server) Node() *raft.Node { return s.node }
+
+func (s *Server) Healthy() bool {
+	select { case <-s.done: return false; case <-s.node.Done(): return false; case <-s.ctx.Done(): return false; default: return true }
+}
 
 func (s *Server) Start() {
 	s.start.Do(func() { go s.run(); s.node.Run() })
@@ -166,6 +174,7 @@ func (s *Server) ReadLatest(ctx context.Context, key string) (Result, error) {
 }
 
 func (s *Server) advanceApplied() {
+	if s.observer != nil { s.observer.Applied(s.state.Index) }
 	s.mu.Lock()
 	close(s.applied)
 	s.applied = make(chan struct{})
@@ -200,11 +209,13 @@ func (s *Server) execute(ctx context.Context, cmd command) (Result, error) {
 		if len(s.pending[id]) == 0 { delete(s.pending, id) }
 		s.mu.Unlock()
 	}()
-	_, _, leader, err := s.node.Propose(ctx, payload)
+	index, term, leader, err := s.node.Propose(ctx, payload)
+	span := trace.SpanFromContext(ctx)
+	if err == nil && leader { span.AddEvent("raft.proposed", trace.WithAttributes(attribute.String("raft.index", strconv.FormatUint(index, 10)), attribute.String("raft.term", strconv.FormatUint(term, 10)))) }
 	if err != nil { return Result{}, err }
 	if !leader { return Result{}, ErrNotLeader }
 	select {
-	case r := <-w.ch: return r.result, r.err
+	case r := <-w.ch: span.AddEvent("raft.result_committed"); span.AddEvent("kv.result_applied"); return r.result, r.err
 	case <-ctx.Done(): return Result{}, ctx.Err()
 	case <-s.done: return Result{}, s.failure()
 	}
@@ -243,6 +254,7 @@ func (s *Server) applyMessage(msg raft.ApplyMsg) error {
 			lastRevision = event.Revision
 		}
 		s.state = restored
+		if s.observer != nil { s.observer.SnapshotSize(uint64(len(msg.Snapshot))) }
 		s.advanceApplied()
 		for client, requests := range s.state.Requests {
 			for sequence, r := range requests { s.notify(requestID{client, sequence}, r) }
@@ -294,6 +306,8 @@ func (s *Server) snapshotIfNeeded(index uint64) error {
 	if status.LogBytes < s.threshold { return nil }
 	data, err := json.Marshal(s.state)
 	if err != nil { return fmt.Errorf("kv: encode snapshot: %w", err) }
-	if err = s.node.Snapshot(index, data); err != nil && !errors.Is(err, raft.ErrSnapshotOutdated) { return fmt.Errorf("kv: create snapshot: %w", err) }
+	if err = s.node.Snapshot(index, data); err != nil {
+		if !errors.Is(err, raft.ErrSnapshotOutdated) { return fmt.Errorf("kv: create snapshot: %w", err) }
+	} else if s.observer != nil { s.observer.SnapshotSize(uint64(len(data))) }
 	return nil
 }

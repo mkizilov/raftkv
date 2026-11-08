@@ -8,3 +8,42 @@ services:
     cpus: 2
     mem_limit: 2g
     command: ["-duration=10m", "-seed=20261107"]
+  telemetry-cluster:
+    profiles: ["observability"]
+    build:
+      context: .
+      dockerfile: Dockerfile.chaos
+    init: true
+    cpus: 2
+    mem_limit: 1g
+    entrypoint: ["/bin/sh", "/workspace/deploy/observability-cluster.sh"]
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v3.3.1@sha256:e2b8aa62b64855956e3ec1e18b4f9387fb6203174a4471936f4662f437f04405
+    network_mode: "service:telemetry-cluster"
+    depends_on: ["telemetry-cluster"]
+    tmpfs:
+      - /workspace/.agent-local:uid=65534,gid=65534
+    volumes:
+      - ./deploy/prometheus.yml:/workspace/deploy/prometheus.yml:ro
+    command: ["--config.file=/workspace/deploy/prometheus.yml", "--storage.tsdb.path=/workspace/.agent-local/prometheus", "--web.listen-address=127.0.0.1:21890"]
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.6.1@sha256:52c3e20686b860c6dc1f623811565773cf51eefa378817a4896dfc863c3c82c8
+    network_mode: "service:telemetry-cluster"
+    depends_on: ["telemetry-cluster", "prometheus"]
+    tmpfs:
+      - /workspace/.agent-local:uid=472,gid=0
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: "21891"
+      GF_PATHS_DATA: /workspace/.agent-local/grafana
+      GF_PATHS_LOGS: /workspace/.agent-local/grafana-logs
+      GF_PATHS_PLUGINS: /workspace/.agent-local/grafana-plugins
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deploy/grafana:/workspace/deploy/grafana:ro
+      - ./deploy/grafana/provisioning/datasources.yml:/etc/grafana/provisioning/datasources/raftkv.yml:ro
+      - ./deploy/grafana/provisioning/dashboards.yml:/etc/grafana/provisioning/dashboards/raftkv.yml:ro

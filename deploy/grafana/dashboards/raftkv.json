@@ -1,0 +1,16 @@
+{
+  "uid": "raftkv-overview",
+  "title": "RaftKV overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Current term", "type": "timeseries", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "raftkv_current_term", "legendFormat": "node {{node_id}}"}]},
+    {"id": 2, "title": "Roles", "type": "timeseries", "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "raftkv_role == 1", "legendFormat": "node {{node_id}} {{role}}"}]},
+    {"id": 3, "title": "Commit and applied", "type": "timeseries", "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "raftkv_commit_index", "legendFormat": "commit {{node_id}}"}, {"expr": "raftkv_applied_index", "legendFormat": "applied {{node_id}}"}]},
+    {"id": 4, "title": "RPC rate", "type": "timeseries", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum by (method, status) (rate(raftkv_rpc_requests_total[5m]))", "legendFormat": "{{method}} {{status}}"}]},
+    {"id": 5, "title": "RPC p95 latency", "type": "timeseries", "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le, method) (rate(raftkv_rpc_duration_seconds_bucket[5m])))", "legendFormat": "{{method}}"}]},
+    {"id": 6, "title": "Leader changes and snapshot size", "type": "timeseries", "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "raftkv_leader_changes_total", "legendFormat": "changes {{node_id}}"}, {"expr": "raftkv_snapshot_size_bytes", "legendFormat": "snapshot bytes {{node_id}}"}]}
+  ]
+}

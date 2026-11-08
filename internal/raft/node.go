@@ -30,6 +30,14 @@ type Config struct {
 	ElectionMin, ElectionMax, Heartbeat time.Duration
 	ApplyCh chan<- ApplyMsg
 	Seed int64
+	Observer Observer
+}
+
+// Observer callbacks must return promptly and must not perform I/O or blocking sends.
+type Observer interface {
+	RaftState(Status)
+	Applied(uint64)
+	SnapshotSize(uint64)
 }
 
 type Status struct {
@@ -126,6 +134,7 @@ func (n *Node) run() {
 	s := &nodeState{node: n, hard: n.initial, log: n.initialLog, snapshot: n.initialSnapshot, role: Follower, random: rand.New(rand.NewSource(seed)), commitIndex: n.initialSnapshot.Index, lastApplied: n.initialSnapshot.Index}
 	if s.snapshot.Index > 0 { snapshot := cloneSnapshot(s.snapshot); s.pendingSnapshot = &snapshot }
 	s.timer = time.NewTimer(s.electionTimeout())
+	s.report()
 	defer func() { s.timer.Stop(); n.cancel(); close(n.done) }()
 	for {
 		var apply chan<- ApplyMsg
@@ -141,10 +150,12 @@ func (n *Node) run() {
 		select {
 		case apply <- msg:
 			if msg.SnapshotValid { s.pendingSnapshot = nil } else { s.lastApplied++ }
+			s.report()
 		case <-n.ctx.Done():
 			return
 		case event := <-n.events:
 			event(s)
+			s.report()
 			if s.err != nil { return }
 		case <-s.timer.C:
 			if s.role == Leader {
@@ -152,9 +163,16 @@ func (n *Node) run() {
 				s.reset(n.config.Heartbeat)
 			} else {
 				s.elect()
-				if s.err != nil { return }
 			}
+			s.report()
+			if s.err != nil { return }
 		}
+	}
+}
+
+func (s *nodeState) report() {
+	if s.node.config.Observer != nil {
+		s.node.config.Observer.RaftState(Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex, LeaderID: s.leaderID, LeaderKnown: s.leaderKnown})
 	}
 }
 

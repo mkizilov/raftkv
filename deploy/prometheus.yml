@@ -1,0 +1,6 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: raftkv
+    static_configs:
+      - targets: ["127.0.0.1:21806", "127.0.0.1:21807", "127.0.0.1:21808"]

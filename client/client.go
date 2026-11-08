@@ -4,6 +4,7 @@ package client
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	pb "github.com/you/raftkv/gen/raftkv/v1"
+	"github.com/you/raftkv/internal/traceutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -73,7 +75,7 @@ func New(config Config) (*Client, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil || host == "" || port == "" { _ = c.Close(); return nil, fmt.Errorf("client: invalid endpoint %q", address) }
 		if _, exists := c.indices[address]; exists { _ = c.Close(); return nil, fmt.Errorf("client: duplicate endpoint %q", address) }
-		conn, err := grpc.NewClient("passthrough:///"+address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64<<20), grpc.MaxCallSendMsgSize(64<<20)))
+		conn, err := grpc.NewClient("passthrough:///"+address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainUnaryInterceptor(traceutil.UnaryClient), grpc.WithChainStreamInterceptor(traceutil.StreamClient), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64<<20), grpc.MaxCallSendMsgSize(64<<20)))
 		if err != nil { _ = c.Close(); return nil, err }
 		c.indices[address] = len(c.addresses)
 		c.addresses = append(c.addresses, address)
@@ -81,6 +83,11 @@ func New(config Config) (*Client, error) {
 		c.clients = append(c.clients, pb.NewKVServiceClient(conn))
 	}
 	return c, nil
+}
+
+func requestContext(ctx context.Context, id RequestID) context.Context {
+	digest := sha256.Sum256([]byte(id.ClientID))
+	return traceutil.WithRequestID(ctx, fmt.Sprintf("%x-%d", digest[:8], id.Sequence))
 }
 
 func (c *Client) Close() error {
@@ -160,7 +167,7 @@ func (c *Client) Get(ctx context.Context, key string) (Result, error) {
 func (c *Client) GetWithID(ctx context.Context, id RequestID, key string) (Result, error) {
 	identity, err := c.identity(id); if err != nil { return Result{}, err }
 	req := &pb.GetRequest{Identity: identity, Key: key}
-	return c.retry(ctx, func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.Get(ctx, req) })
+	return c.retry(requestContext(ctx, id), func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.Get(ctx, req) })
 }
 func (c *Client) Put(ctx context.Context, key, value string) (Result, error) {
 	id, err := c.NewRequest(); if err != nil { return Result{}, err }; return c.PutWithID(ctx, id, key, value)
@@ -168,7 +175,7 @@ func (c *Client) Put(ctx context.Context, key, value string) (Result, error) {
 func (c *Client) PutWithID(ctx context.Context, id RequestID, key, value string) (Result, error) {
 	identity, err := c.identity(id); if err != nil { return Result{}, err }
 	req := &pb.PutRequest{Identity: identity, Key: key, Value: value}
-	return c.retry(ctx, func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.Put(ctx, req) })
+	return c.retry(requestContext(ctx, id), func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.Put(ctx, req) })
 }
 func (c *Client) Delete(ctx context.Context, key string) (Result, error) {
 	id, err := c.NewRequest(); if err != nil { return Result{}, err }; return c.DeleteWithID(ctx, id, key)
@@ -176,7 +183,7 @@ func (c *Client) Delete(ctx context.Context, key string) (Result, error) {
 func (c *Client) DeleteWithID(ctx context.Context, id RequestID, key string) (Result, error) {
 	identity, err := c.identity(id); if err != nil { return Result{}, err }
 	req := &pb.DeleteRequest{Identity: identity, Key: key}
-	return c.retry(ctx, func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.Delete(ctx, req) })
+	return c.retry(requestContext(ctx, id), func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.Delete(ctx, req) })
 }
 func (c *Client) CompareAndSwap(ctx context.Context, key string, expected uint64, value string) (Result, error) {
 	id, err := c.NewRequest(); if err != nil { return Result{}, err }; return c.CompareAndSwapWithID(ctx, id, key, expected, value)
@@ -184,7 +191,7 @@ func (c *Client) CompareAndSwap(ctx context.Context, key string, expected uint64
 func (c *Client) CompareAndSwapWithID(ctx context.Context, id RequestID, key string, expected uint64, value string) (Result, error) {
 	identity, err := c.identity(id); if err != nil { return Result{}, err }
 	req := &pb.CompareAndSwapRequest{Identity: identity, Key: key, ExpectedVersion: expected, Value: value}
-	return c.retry(ctx, func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.CompareAndSwap(ctx, req) })
+	return c.retry(requestContext(ctx, id), func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.CompareAndSwap(ctx, req) })
 }
 
 // Status queries each configured endpoint; per-node failures are retained in

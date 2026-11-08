@@ -42,7 +42,7 @@ func TestClientRecoversAfterLeaderProcessKilled(t *testing.T) {
 	endpoints := []string{"127.0.0.1:21881", "127.0.0.1:21883", "127.0.0.1:21885"}
 	for i := 0; i < 3; i++ {
 		p := &testProcess{}
-		p.command = exec.Command(binary, "-id", fmt.Sprint(i+1), "-raft-listen", fmt.Sprintf("127.0.0.1:%d", 21880+i*2), "-client-listen", endpoints[i], "-peers", peers, "-data-dir", filepath.Join(root, fmt.Sprintf("node-%d", i+1)))
+		p.command = exec.Command(binary, "-id", fmt.Sprint(i+1), "-raft-listen", fmt.Sprintf("127.0.0.1:%d", 21880+i*2), "-client-listen", endpoints[i], "-http-listen", fmt.Sprintf("127.0.0.1:%d", 21886+i), "-peers", peers, "-data-dir", filepath.Join(root, fmt.Sprintf("node-%d", i+1)))
 		p.command.Stderr = &p.stderr
 		if err := p.command.Start(); err != nil { t.Fatal(err) }
 		processes = append(processes, p)

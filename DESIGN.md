@@ -48,7 +48,7 @@ address is empty before a leader is known and is only a best-effort hint during
 partitions. Clients must retry safely with the same identity and sequence.
 `scripts/local-cluster.sh` builds and runs three loopback nodes on ports
 21800–21805, removes its temporary data on exit, and stops all three on Ctrl-C.
-The integration test binds loopback ports 21860–21865.
+The integration test binds loopback ports 21860–21868.
 
 This transport currently uses plaintext, unauthenticated gRPC and is intended
 only for trusted local testing; do not expose it to untrusted networks. TLS and
@@ -75,7 +75,7 @@ Commands are `get key`, `put key value`, `delete key`, `cas key version value`,
 term, and commit index, including per-node errors. Bench performs actual logged
 reads with two workers and reports completed operations and measured throughput.
 The process-failure integration test builds a race-enabled server, binds
-loopback ports 21880–21885, kills the leader, and checks the continuing workload;
+loopback ports 21880–21888, kills the leader, and checks the continuing workload;
 it requires the local Go toolchain and generated bindings.
 
 ## Process chaos harness
@@ -83,7 +83,7 @@ it requires the local Go toolchain and generated bindings.
 `go run ./cmd/chaos -duration=10m -seed=20261107` builds a race-enabled server
 inside a temporary project-local directory and starts five real node processes.
 Each node has a client proxy and a separate directed TCP proxy for every other
-node, all on loopback ports 21800–21839. Directed links allow a 2/3 partition
+node, all on loopback ports 21800–21844 including telemetry. Directed links allow a 2/3 partition
 without relying on host firewalls or Docker. Partitions close existing proxied
 connections as well as rejecting new ones; latency delays traffic in both
 directions. A seeded schedule kills and restarts nodes with their data intact,
@@ -112,6 +112,42 @@ not a five-container distributed deployment. Docker execution is unverified in
 this sandbox because host Docker access is forbidden. The required ten-minute
 native chaos run also remains unverified until the local Go toolchain and
 generated protobuf bindings are available.
+
+## Observability
+
+`raftkv-server -http-listen 127.0.0.1:21890` exposes `/metrics`, `/healthz`,
+and `/readyz`; the local cluster uses 21806–21808 instead. `/healthz` reports
+whether the server and Raft owner are running. `/readyz` is leader-only: it
+performs a ReadIndex quorum round and waits for the KV apply loop. A leader that
+has not yet committed an entry in its current term, an isolated leader, or a
+follower is not ready. Liveness alone does not prove quorum or progress.
+
+Prometheus metrics include current term, one-hot role, commit and KV-applied
+indexes, distinct observed leader/term pairs (including the first observed
+leader), current snapshot payload size, and gRPC request counts and duration
+histograms by method and status. Watch latency covers the lifetime of a stream.
+The process owns a separate registry per node; request IDs are not metric labels.
+
+Server logs are JSON via `log/slog`; `-log-level` accepts debug, info, warn,
+or error. Every emitted application log includes node ID, current observed term,
+role, and request ID (`-` outside a request); trace IDs are included when valid.
+The client propagates W3C trace context and a stable hashed request ID across
+retry attempts. Server spans include Raft proposal and committed/applied events;
+an application using the client can install an OpenTelemetry tracer provider
+to create upstream spans. Set `-otlp-endpoint` to a full OTLP/HTTP traces URL
+such as `http://127.0.0.1:21892/v1/traces` to export server spans. No spans are
+exported by default; exporter shutdown is bounded. Do not put credentials in
+the endpoint URL or expose the unauthenticated HTTP or gRPC listeners to an
+untrusted network.
+
+The Compose `observability` profile provisions Prometheus, Grafana, a three-node
+cluster, a datasource, and `deploy/grafana/dashboards/raftkv.json`. Use
+`docker compose --profile observability up telemetry-cluster prometheus grafana`.
+These services share a private network namespace and bind loopback only; no host
+ports or Docker socket are exposed. Prometheus listens on 21890 and Grafana on
+21891 inside that namespace, with anonymous viewer access. An operator needs a
+separately secured access path to view Grafana from outside the namespace.
+The profile and OTLP export have not been run in this sandbox.
 
 ## Election implementation and concurrency
 

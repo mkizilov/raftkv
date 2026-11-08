@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +29,7 @@ func TestThreeNodeGRPCCluster(t *testing.T) {
 	errs := make(chan error, 3)
 	for i := 0; i < 3; i++ {
 		id := transport.NodeID(i+1)
-		c := config{id: id, raftListen: raftPeers[id], clientListen: clientPeers[id], dataDir: t.TempDir(), raftPeers: raftPeers, clientPeers: clientPeers}
+		c := config{id: id, raftListen: raftPeers[id], clientListen: clientPeers[id], httpListen: fmt.Sprintf("127.0.0.1:%d", 21866+i), dataDir: t.TempDir(), raftPeers: raftPeers, clientPeers: clientPeers}
 		go func() { errs <- serve(ctx, c) }()
 	}
 	t.Cleanup(func() {
@@ -62,6 +65,24 @@ func TestThreeNodeGRPCCluster(t *testing.T) {
 	response, err := clients[leader].Get(readCtx, &pb.GetRequest{Identity: &pb.RequestIdentity{ClientId: "integration", Sequence: 2}, Key: "key"})
 	stop()
 	if err != nil || response.Value != "value" || response.Version != 1 { t.Fatalf("read: %+v %v", response, err) }
+	probe := &http.Client{Timeout: time.Second}
+	httpAddress := fmt.Sprintf("http://127.0.0.1:%d", 21866+leader)
+	deadline = time.Now().Add(3*time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		r, err := probe.Get(httpAddress + "/readyz")
+		if err == nil { _ = r.Body.Close(); if r.StatusCode == http.StatusOK { ready = true; break } }
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !ready { t.Fatal("leader did not become ready") }
+	r, err := probe.Get(httpAddress + "/metrics")
+	if err != nil { t.Fatal(err) }
+	metrics, err := io.ReadAll(r.Body)
+	closeErr := r.Body.Close()
+	if err != nil || closeErr != nil || r.StatusCode != http.StatusOK { t.Fatalf("metrics: %v %v status %d", err, closeErr, r.StatusCode) }
+	for _, name := range []string{"raftkv_current_term", "raftkv_role", "raftkv_commit_index", "raftkv_applied_index", "raftkv_rpc_requests_total", "raftkv_rpc_duration_seconds_bucket"} {
+		if !strings.Contains(string(metrics), name) { t.Errorf("missing metric %s", name) }
+	}
 	follower := (leader + 1) % 3
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

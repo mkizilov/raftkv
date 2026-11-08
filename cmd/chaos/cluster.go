@@ -62,7 +62,7 @@ func (c *cluster) start(i int) error {
 	}
 	log, err := os.OpenFile(filepath.Join(c.root, fmt.Sprintf("node-%d.log", i+1)), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil { return err }
-	cmd := exec.Command(c.binary, "-id", fmt.Sprint(i+1), "-raft-listen", raftAddress(i), "-client-listen", clientAddress(i), "-peers", strings.Join(peers, ","), "-data-dir", filepath.Join(c.root, fmt.Sprintf("node-%d", i+1)))
+	cmd := exec.Command(c.binary, "-id", fmt.Sprint(i+1), "-raft-listen", raftAddress(i), "-client-listen", clientAddress(i), "-http-listen", address(21840+i), "-peers", strings.Join(peers, ","), "-data-dir", filepath.Join(c.root, fmt.Sprintf("node-%d", i+1)))
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil { _ = log.Close(); return err }
 	c.nodes[i] = nodeProcess{command: cmd, log: log}

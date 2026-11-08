@@ -11,6 +11,7 @@ COPY . .
 RUN mkdir -p "$HOME" "$TMPDIR" "$GOMODCACHE" "$GOCACHE" /workspace/.agent-local/bin \
     && GOFLAGS='-p=2 -mod=mod' go tool buf generate \
     && go mod tidy \
-    && go build -o /workspace/.agent-local/bin/chaos ./cmd/chaos
+    && go build -o /workspace/.agent-local/bin/chaos ./cmd/chaos \
+    && go build -o /workspace/.agent-local/bin/raftkv-server ./cmd/raftkv-server
 ENTRYPOINT ["/workspace/.agent-local/bin/chaos"]
 CMD ["-duration=10m", "-seed=20261107"]
