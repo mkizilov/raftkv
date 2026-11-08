@@ -1,8 +1,8 @@
 # RaftKV design
 
 This document specifies the intended implementation. Election, log replication,
-and in-memory storage exist, but durable storage, production networking, and
-the client API do not yet. Raft will
+and file-backed storage exist, but production networking and the client API do
+not yet. Raft will
 be implemented in this repository, not with an existing Raft implementation.
 The protocol below follows Figure 2 of the [Raft paper](https://raft.github.io/raft.pdf).
 
@@ -60,6 +60,36 @@ relearns commitment from a leader and may deliver entries again. Consumers must
 account for replay until a durable state-machine recovery protocol is added.
 Storage log replacement is atomic at the interface boundary; the in-memory
 implementation is not durable across process restarts.
+
+## Disk storage and recovery
+
+`OpenDiskStorage` requires an existing, exclusively owned directory; concurrent
+instances or processes using the same directory are unsupported. A dedicated
+storage goroutine serializes operations without holding a lock during file I/O;
+call `Close` after stopping the node to release its file and goroutine. The state file
+contains a version, term, vote and checksum. A replacement is written to a temp
+file in that directory, synced, renamed over the state file, and followed by a
+directory sync. Log changes append a versioned, checksummed record describing
+the retained prefix and replacement suffix, then sync the log before returning.
+The log file is created and its directory synced on open. The current design
+retains all records and has a 64 MiB limit per encoded mutation; compaction and
+snapshots are future work.
+
+Recovery replays complete records and truncates and syncs an incomplete final
+header or payload. A complete record with an invalid header or checksum, an
+invalid prefix, or a corrupt state file causes an error rather than silently
+discarding potentially acknowledged data. A write or sync failure poisons the
+storage instance; the node stops and must be reopened to recover its on-disk
+state. A crash during state replacement may leave a `.state-*` temp file; it is
+never used for recovery. Successful saves remove their temporary file. Commit
+and apply positions remain volatile and a recovered state machine must tolerate
+replay; disk storage alone does not provide application-level exactly-once
+execution. File sync and rename durability assume a filesystem honoring those
+operations; no host-specific power-loss guarantees are claimed.
+The restart regression test stops and recreates nodes at seeded points during
+replication; this models node restarts but is not an operating-system kill or
+power-loss test. A separate subprocess exits without closing storage after
+synced writes, and torn-record tests inject truncated bytes explicitly.
 
 ## Raft state
 
