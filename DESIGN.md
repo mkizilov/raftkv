@@ -1,7 +1,8 @@
 # RaftKV design
 
-This document specifies the intended implementation. The project does not yet
-implement consensus, storage, production networking, or the client API. Raft will
+This document specifies the intended implementation. Election and in-memory
+term/vote storage exist, but log replication, durable storage, production
+networking, and the client API do not yet. Raft will
 be implemented in this repository, not with an existing Raft implementation.
 The protocol below follows Figure 2 of the [Raft paper](https://raft.github.io/raft.pdf).
 
@@ -17,8 +18,29 @@ context cancellation, and callers must use deadlines when they need bounded wait
 Each test uses a fixed seed, overridable with `RAFTKV_TEST_SEED`, and prints it
 on failure. The seed reproduces random decisions for the same call order, but
 cannot reproduce nondeterministic goroutine scheduling by itself. The cluster
-helper uses a node adapter until actual Raft nodes exist; it does not simulate
-consensus or establish correctness of elections and replication.
+helper uses a node adapter; election tests adapt real nodes to it. The helper
+does not simulate replication.
+
+## Election implementation and concurrency
+
+Each node has one goroutine owning its term, vote, role, election timer, and
+vote tally. RPC handlers and status queries submit events to that goroutine;
+their buffered replies cannot block the owner if a caller cancels. Outbound
+RPCs run in separate, deadline-bound goroutines and return results as events.
+The owner does not hold locks across I/O or channel sends. Shutdown cancels RPCs
+and waits for the owner and RPC workers. The storage interface atomically saves
+term and vote before a vote or higher term is reported; a storage error stops
+the node rather than allowing an unsafe response. The provided memory storage
+survives only while its instance remains alive and is not durable across a
+process restart. Nodes must be registered with the transport before Start.
+
+Election timeouts default to a random duration in [150 ms, 300 ms), with 50 ms
+heartbeats; all are configurable. Each node's seeded RNG is mixed with its ID.
+The vote freshness comparison uses the configured local log tail until actual
+log storage exists. Heartbeats only support an empty log prefix and do not
+replicate entries; snapshot installation is explicitly unsupported. A leader
+isolated from the majority remains a leader in its old term until it observes a
+higher term, so clients must not treat its role alone as a linearizable lease.
 
 ## Raft state
 
