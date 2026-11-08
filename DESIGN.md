@@ -1,9 +1,24 @@
 # RaftKV design
 
-This document specifies the intended implementation. This initial scaffold does
-not yet implement consensus, storage, networking, or the client API. Raft will
+This document specifies the intended implementation. The project does not yet
+implement consensus, storage, production networking, or the client API. Raft will
 be implemented in this repository, not with an existing Raft implementation.
 The protocol below follows Figure 2 of the [Raft paper](https://raft.github.io/raft.pdf).
+
+## Test transport
+
+`internal/transport` defines the RPC boundary, including snapshot chunks, and a
+concurrency-safe in-memory network for tests. The network can disconnect nodes,
+partition groups, drop requests and responses independently, and delay each
+delivery randomly, allowing concurrent calls to overtake each other. Any topology
+change invalidates all in-flight RPCs, including those on unaffected links; a
+handler may already have executed when its response is lost. Handlers must honor
+context cancellation, and callers must use deadlines when they need bounded waits.
+Each test uses a fixed seed, overridable with `RAFTKV_TEST_SEED`, and prints it
+on failure. The seed reproduces random decisions for the same call order, but
+cannot reproduce nondeterministic goroutine scheduling by itself. The cluster
+helper uses a node adapter until actual Raft nodes exist; it does not simulate
+consensus or establish correctness of elections and replication.
 
 ## Raft state
 
