@@ -37,6 +37,8 @@ type Status struct {
 	Role Role
 	CommitIndex uint64
 	LogBytes uint64
+	LeaderID transport.NodeID
+	LeaderKnown bool
 }
 
 type ApplyMsg struct {
@@ -75,6 +77,8 @@ type nodeState struct {
 	commitIndex, lastApplied uint64
 	nextIndex, matchIndex map[transport.NodeID]uint64
 	inflight map[transport.NodeID]bool
+	leaderID transport.NodeID
+	leaderKnown bool
 }
 
 func NewNode(config Config) (*Node, error) {
@@ -181,6 +185,7 @@ func (s *nodeState) observeTerm(term uint64) bool {
 	if !s.persist(HardState{Term: term}) { return false }
 	s.role = Follower
 	s.votes = nil
+	s.leaderKnown = false
 	s.reset(s.electionTimeout())
 	return true
 }
@@ -189,6 +194,7 @@ func (s *nodeState) elect() {
 	hard := HardState{Term: s.hard.Term + 1, VotedFor: s.node.config.ID, HasVote: true}
 	if !s.persist(hard) { return }
 	s.role = Candidate
+	s.leaderKnown = false
 	s.votes = map[transport.NodeID]bool{s.node.config.ID: true}
 	s.reset(s.electionTimeout())
 	if len(s.votes) > (len(s.node.config.Peers)+1)/2 { s.becomeLeader(); return }
@@ -211,6 +217,7 @@ func (s *nodeState) elect() {
 
 func (s *nodeState) becomeLeader() {
 	s.role = Leader
+	s.leaderID, s.leaderKnown = s.node.config.ID, true
 	s.votes = nil
 	s.nextIndex = make(map[transport.NodeID]uint64)
 	s.matchIndex = make(map[transport.NodeID]uint64)
@@ -266,7 +273,7 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 	return call(ctx, n, func(s *nodeState) (Status, error) {
 		var size uint64
 		for _, entry := range s.log { size += uint64(len(entry.Command)) + 8 }
-		return Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex, LogBytes: size}, nil
+		return Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex, LogBytes: size, LeaderID: s.leaderID, LeaderKnown: s.leaderKnown}, nil
 	})
 }
 
@@ -296,6 +303,7 @@ func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesReq
 		if req.Term < s.hard.Term { return response, nil }
 		s.role = Follower
 		s.votes = nil
+		s.leaderID, s.leaderKnown = req.LeaderID, true
 		s.reset(s.electionTimeout())
 		if req.PrevLogIndex < s.snapshot.Index {
 			response.ConflictIndex = s.snapshot.Index + 1

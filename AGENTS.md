@@ -20,7 +20,7 @@ Extend this file with the project's language-specific architecture and verificat
 
 - `internal/raft` owns consensus; implement Raft from scratch without hashicorp/raft or etcd/raft. `internal/kv` owns the state machine, `internal/transport` communication, and `cmd/raftkv-server` and `cmd/raftctl` the server and client entry points.
 - Follow `DESIGN.md` as the protocol specification. Never hold a Raft lock during I/O or while sending on a channel that might block.
-- Run `scripts/check.sh`: it runs `go build ./...`, `go test -race ./...`, `go vet ./...`, and `go tool golangci-lint run --concurrency 2`. Always run Go tests with `-race`; keep build/test parallelism at most two.
+- Run `scripts/check.sh`: it first runs `go tool buf generate`, then `go build ./...`, `go test -race ./...`, `go vet ./...`, and `go tool golangci-lint run --concurrency 2`. Always run Go tests with `-race`; keep build/test parallelism at most two.
 - Go and developer tools are pinned in `go.mod`; use `go tool` for the pinned developer tools, with dependencies and caches inside the repository. Install a matching Go toolchain locally if needed.
-- Initial dependency resolution and `go.sum` generation require a network-accessible Go module proxy: run `go mod tidy` using the pinned toolchain before the first check if checksums are absent.
+- Initial dependency resolution and `go.sum` generation require a network-accessible Go module proxy. When generated bindings are absent, download the pinned modules and run `go tool buf generate` before `go mod tidy`; then run the checks.
 - Definition of done for each future task: `scripts/check.sh` passes; new code has tests; update `DESIGN.md` if the design changed; give a short summary; make a local conventional-commit Git commit. Report any genuine verification limitations rather than claiming a pass.

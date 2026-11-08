@@ -156,10 +156,16 @@ func TestHeartbeatUpdatesTermAndRejectsMissingPrefix(t *testing.T) {
 	ctx := context.Background()
 	response, err := node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 3, LeaderID: 2})
 	if err != nil || !response.Success || response.Term != 3 { t.Fatalf("heartbeat: %+v, %v", response, err) }
+	status, err := node.Status(ctx)
+	if err != nil || !status.LeaderKnown || status.LeaderID != 2 { t.Fatalf("leader hint: %+v %v", status, err) }
 	state, err := store.Load()
 	if err != nil || state.Term != 3 || state.HasVote { t.Fatalf("persisted state: %+v, %v", state, err) }
 	response, err = node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 2, LeaderID: 2})
 	if err != nil || response.Success || response.Term != 3 { t.Fatalf("stale heartbeat: %+v, %v", response, err) }
-	response, err = node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 3, LeaderID: 2, PrevLogIndex: 1, PrevLogTerm: 3})
+	_, err = node.RequestVote(ctx, transport.RequestVoteRequest{Term: 4, CandidateID: 3})
+	if err != nil { t.Fatal(err) }
+	status, err = node.Status(ctx)
+	if err != nil || status.LeaderKnown { t.Fatalf("stale leader hint after term change: %+v %v", status, err) }
+	response, err = node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 4, LeaderID: 2, PrevLogIndex: 1, PrevLogTerm: 3})
 	if err != nil || response.Success { t.Fatalf("missing prefix: %+v, %v", response, err) }
 }

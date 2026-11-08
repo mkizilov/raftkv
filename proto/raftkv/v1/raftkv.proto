@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package raftkv.v1;
+
+option go_package = "github.com/you/raftkv/gen/raftkv/v1;raftkvv1";
+
+service RaftService {
+  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+}
+
+message LogEntry {
+  uint64 term = 1;
+  bytes command = 2;
+}
+
+message RequestVoteRequest {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message RequestVoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+message AppendEntriesRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  repeated LogEntry entries = 5;
+  uint64 leader_commit = 6;
+}
+
+message AppendEntriesResponse {
+  uint64 term = 1;
+  bool success = 2;
+  uint64 conflict_term = 3;
+  uint64 conflict_index = 4;
+  bool has_conflict_term = 5;
+  bool compacted = 6;
+}
+
+message InstallSnapshotRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 last_included_index = 3;
+  uint64 last_included_term = 4;
+  uint64 offset = 5;
+  bytes data = 6;
+  bool done = 7;
+}
+
+message InstallSnapshotResponse { uint64 term = 1; }
+
+service KVService {
+  rpc Get(GetRequest) returns (KVResponse);
+  rpc Put(PutRequest) returns (KVResponse);
+  rpc Delete(DeleteRequest) returns (KVResponse);
+  rpc CompareAndSwap(CompareAndSwapRequest) returns (KVResponse);
+}
+
+message RequestIdentity {
+  string client_id = 1;
+  uint64 sequence = 2;
+}
+
+message GetRequest { RequestIdentity identity = 1; string key = 2; }
+message PutRequest { RequestIdentity identity = 1; string key = 2; string value = 3; }
+message DeleteRequest { RequestIdentity identity = 1; string key = 2; }
+message CompareAndSwapRequest {
+  RequestIdentity identity = 1;
+  string key = 2;
+  uint64 expected_version = 3;
+  string value = 4;
+}
+
+message KVResponse {
+  string value = 1;
+  uint64 version = 2;
+  bool found = 3;
+  bool swapped = 4;
+}
+
+// Attached as a gRPC status detail to FAILED_PRECONDITION on followers.
+message NotLeaderDetail { string leader_address = 1; }

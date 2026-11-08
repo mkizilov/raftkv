@@ -15,6 +15,7 @@ var (
 	ErrStopped = errors.New("kv: server stopped")
 	ErrRequestConflict = errors.New("kv: client sequence reused for a different request")
 	ErrVersionExhausted = errors.New("kv: key version exhausted")
+	ErrInvalidRequest = errors.New("kv: client ID, positive sequence and key are required")
 )
 
 // Result describes the value and version after an operation. Deleted keys
@@ -178,7 +179,7 @@ func (s *Server) CompareAndSwap(ctx context.Context, client string, sequence uin
 }
 
 func (s *Server) execute(ctx context.Context, cmd command) (Result, error) {
-	if cmd.ClientID == "" || cmd.Sequence == 0 || cmd.Key == "" { return Result{}, errors.New("kv: client ID, positive sequence and key are required") }
+	if cmd.ClientID == "" || cmd.Sequence == 0 || cmd.Key == "" { return Result{}, ErrInvalidRequest }
 	payload, err := json.Marshal(cmd)
 	if err != nil { return Result{}, err }
 	id := requestID{cmd.ClientID, cmd.Sequence}

@@ -1,8 +1,8 @@
 # RaftKV design
 
 This document specifies the intended implementation. Election, log replication,
-file-backed storage, and an in-process replicated KV API exist, but production
-networking and a network client API do not yet. Raft will
+file-backed storage, and an in-process replicated KV API exist. A gRPC transport
+and client API are implemented but require generated protobuf bindings. Raft will
 be implemented in this repository, not with an existing Raft implementation.
 The protocol below follows Figure 2 of the [Raft paper](https://raft.github.io/raft.pdf).
 
@@ -25,6 +25,34 @@ convergence. It compares applied entries at each index, including after restart;
 stopping an in-process node models a crash but is not a forced process kill.
 Run it and the backtracking tests repeatedly with
 `go test -race -count=100 -run 'TestUnreliablePartitionsAndLeaderCrashes|TestFastBacktrackingThousands|TestBacktrackHints' ./internal/raft`.
+
+## gRPC transport and server
+
+`proto/raftkv/v1/raftkv.proto` defines the Raft RPCs and implemented KV calls.
+Generate the Go bindings under `gen/` with `go tool buf generate`; the Buf
+template runs the pinned `protoc-gen-go` and `protoc-gen-go-grpc` through
+`go tool`. `scripts/check.sh` generates bindings before building and testing.
+The bindings and `go.sum` have not been generated in this checkout: the local
+Go toolchain is unavailable and the module proxy could not be resolved. Install
+the pinned toolchain and download the pinned modules inside this repository,
+generate the bindings, and resolve checksums before building or running tests.
+The runtime uses one reusable connection per peer, inherits caller deadlines,
+and applies an additional RPC timeout. Raft and KV listen on separate addresses.
+
+`raftkv-server` takes `-id`, `-raft-listen`, `-client-listen`, `-data-dir`, and
+`-peers`, where each peer is `id=raft-address@client-address` and the list
+includes the local node. `-snapshot-bytes` sets the KV snapshot threshold.
+Follower client requests return gRPC `FailedPrecondition` with a
+`NotLeaderDetail` containing the last known leader's client address; the
+address is empty before a leader is known and is only a best-effort hint during
+partitions. Clients must retry safely with the same identity and sequence.
+`scripts/local-cluster.sh` builds and runs three loopback nodes on ports
+21800–21805, removes its temporary data on exit, and stops all three on Ctrl-C.
+The integration test binds loopback ports 21860–21865.
+
+This transport currently uses plaintext, unauthenticated gRPC and is intended
+only for trusted local testing; do not expose it to untrusted networks. Watch,
+TLS, membership changes, and a networked CLI are not yet implemented.
 
 ## Election implementation and concurrency
 
