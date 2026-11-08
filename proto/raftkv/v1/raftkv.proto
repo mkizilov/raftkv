@@ -100,6 +100,7 @@ message StatusResponse {
   bool leader_known = 5;
   uint64 leader_id = 6;
   string leader_address = 7;
+  repeated uint64 voter_ids = 8;
 }
 
 // after_revision is an exclusive cursor; zero requests all retained events.

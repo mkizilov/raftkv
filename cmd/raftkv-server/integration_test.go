@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,10 @@ func TestThreeNodeGRPCCluster(t *testing.T) {
 		if leader < 0 { time.Sleep(20 * time.Millisecond) }
 	}
 	if leader < 0 { t.Fatal("no leader accepted a write") }
+	statusCtx, stopStatus := context.WithTimeout(ctx, 2*time.Second)
+	memberStatus, err := clients[leader].Status(statusCtx, &pb.StatusRequest{})
+	stopStatus()
+	if err != nil || !reflect.DeepEqual(memberStatus.GetVoterIds(), []uint64{1, 2, 3}) { t.Fatalf("configured voters: %+v %v", memberStatus, err) }
 	readCtx, stop := context.WithTimeout(ctx, 2*time.Second)
 	response, err := clients[leader].Get(readCtx, &pb.GetRequest{Identity: &pb.RequestIdentity{ClientId: "integration", Sequence: 2}, Key: "key"})
 	stop()

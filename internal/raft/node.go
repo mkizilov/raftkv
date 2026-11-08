@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -47,6 +48,7 @@ type Status struct {
 	LogBytes uint64
 	LeaderID transport.NodeID
 	LeaderKnown bool
+	Voters []transport.NodeID
 }
 
 type ApplyMsg struct {
@@ -291,12 +293,21 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 	return call(ctx, n, func(s *nodeState) (Status, error) {
 		var size uint64
 		for _, entry := range s.log { size += uint64(len(entry.Command)) + 8 }
-		return Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex, LogBytes: size, LeaderID: s.leaderID, LeaderKnown: s.leaderKnown}, nil
+		voters := append([]transport.NodeID{n.config.ID}, n.config.Peers...)
+		sort.Slice(voters, func(i, j int) bool { return voters[i] < voters[j] })
+		return Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex, LogBytes: size, LeaderID: s.leaderID, LeaderKnown: s.leaderKnown, Voters: voters}, nil
 	})
+}
+
+func (n *Node) configuredVoter(id transport.NodeID) bool {
+	if n.config.ID == id { return true }
+	for _, peer := range n.config.Peers { if peer == id { return true } }
+	return false
 }
 
 func (n *Node) RequestVote(ctx context.Context, req transport.RequestVoteRequest) (transport.RequestVoteResponse, error) {
 	return call(ctx, n, func(s *nodeState) (transport.RequestVoteResponse, error) {
+		if !n.configuredVoter(req.CandidateID) { return transport.RequestVoteResponse{Term: s.hard.Term}, nil }
 		if !s.observeTerm(req.Term) { return transport.RequestVoteResponse{}, s.err }
 		response := transport.RequestVoteResponse{Term: s.hard.Term}
 		last := s.lastIndex()

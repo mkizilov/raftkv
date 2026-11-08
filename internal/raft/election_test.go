@@ -101,7 +101,7 @@ func TestRequestVotePersistenceAndLogFreshness(t *testing.T) {
 	entries := make([]transport.LogEntry, 7)
 	for i := range entries { entries[i].Term = 3 }
 	if err := store.SaveLog(entries); err != nil { t.Fatal(err) }
-	config := Config{ID: 1, Transport: network.Endpoint(1), Storage: store, ElectionMin: time.Hour, ElectionMax: time.Hour, Heartbeat: time.Minute}
+	config := Config{ID: 1, Peers: []transport.NodeID{2, 3}, Transport: network.Endpoint(1), Storage: store, ElectionMin: time.Hour, ElectionMax: time.Hour, Heartbeat: time.Minute}
 	node, err := NewNode(config)
 	if err != nil { t.Fatal(err) }
 	node.Run()
@@ -138,7 +138,7 @@ func (failingStorage) SaveSnapshot(SnapshotState, []transport.LogEntry) error { 
 
 func TestPersistenceFailureStopsNode(t *testing.T) {
 	network := transport.NewNetwork(1)
-	node, err := NewNode(Config{ID: 1, Transport: network.Endpoint(1), Storage: failingStorage{}})
+	node, err := NewNode(Config{ID: 1, Peers: []transport.NodeID{2}, Transport: network.Endpoint(1), Storage: failingStorage{}})
 	if err != nil { t.Fatal(err) }
 	node.Run()
 	defer node.Stop()
@@ -149,7 +149,7 @@ func TestPersistenceFailureStopsNode(t *testing.T) {
 func TestHeartbeatUpdatesTermAndRejectsMissingPrefix(t *testing.T) {
 	network := transport.NewNetwork(1)
 	store := &MemoryStorage{}
-	node, err := NewNode(Config{ID: 1, Transport: network.Endpoint(1), Storage: store, ElectionMin: time.Hour, ElectionMax: time.Hour, Heartbeat: time.Minute})
+	node, err := NewNode(Config{ID: 1, Peers: []transport.NodeID{2, 3}, Transport: network.Endpoint(1), Storage: store, ElectionMin: time.Hour, ElectionMax: time.Hour, Heartbeat: time.Minute})
 	if err != nil { t.Fatal(err) }
 	node.Run()
 	defer node.Stop()

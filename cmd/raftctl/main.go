@@ -27,10 +27,10 @@ func run(ctx context.Context, args []string, output, errorOutput io.Writer) (run
 	sequence := flags.Uint64("sequence", 0, "request sequence to use with -client-id")
 	after := flags.Uint64("after-revision", 0, "watch cursor (exclusive)")
 	if err := flags.Parse(args); err != nil { return err }
-	if *timeout < 0 || flags.NArg() == 0 { return errors.New("usage: raftctl [flags] get|put|delete|cas|status|bench|watch ...") }
+	if *timeout < 0 || flags.NArg() == 0 { return errors.New("usage: raftctl [flags] get|put|delete|cas|status|member|bench|watch ...") }
 	command, values := flags.Arg(0), flags.Args()[1:]
 	if *sequence > 0 && *clientID == "" { return errors.New("-sequence requires -client-id") }
-	if *clientID != "" && *sequence == 0 && command != "status" && command != "watch" { return errors.New("-client-id requires a positive -sequence") }
+	if *clientID != "" && *sequence == 0 && command != "status" && command != "member" && command != "watch" { return errors.New("-client-id requires a positive -sequence") }
 	initial := uint64(0)
 	if *sequence > 0 { initial = *sequence - 1 }
 	c, err := client.New(client.Config{Endpoints: strings.Split(*endpoints, ","), ClientID: *clientID, InitialSequence: initial})
@@ -68,6 +68,13 @@ func run(ctx context.Context, args []string, output, errorOutput io.Writer) (run
 			if err := json.NewEncoder(output).Encode(entry); err != nil { return err }
 		}
 		return statusErr
+	case "member":
+		if len(values) != 1 || values[0] != "list" { return errors.New("usage: member list (membership changes are not supported)") }
+		states, err := c.Status(ctx)
+		if err != nil { return err }
+		members, err := configuredMembers(states)
+		if err != nil { return err }
+		return json.NewEncoder(output).Encode(members)
 	case "bench":
 		if len(values) != 2 { return errors.New("usage: bench count key") }
 		count, parseErr := strconv.Atoi(values[0])
@@ -80,6 +87,33 @@ func run(ctx context.Context, args []string, output, errorOutput io.Writer) (run
 	}
 	if err != nil { return err }
 	return json.NewEncoder(output).Encode(result)
+}
+
+type memberInfo struct {
+	NodeID uint64 `json:"node_id"`
+	Address string `json:"address"`
+	Role string `json:"role"`
+	Reachable bool `json:"reachable"`
+}
+
+func configuredMembers(states []client.NodeStatus) ([]memberInfo, error) {
+	var leader *client.NodeStatus
+	for i := range states {
+		state := &states[i]
+		if state.Err != nil || state.Role != "leader" { continue }
+		if leader == nil || state.Term > leader.Term { leader = state; continue }
+		if state.Term == leader.Term && state.NodeID != leader.NodeID { return nil, errors.New("multiple leaders reported in the same term") }
+	}
+	if leader == nil || len(leader.VoterIDs) == 0 { return nil, errors.New("no leader with a configured voter list is available") }
+	members := make([]memberInfo, 0, len(leader.VoterIDs))
+	for _, id := range leader.VoterIDs {
+		member := memberInfo{NodeID: id}
+		for _, state := range states {
+			if state.Err == nil && state.NodeID == id { member.Address, member.Role, member.Reachable = state.Address, state.Role, true; break }
+		}
+		members = append(members, member)
+	}
+	return members, nil
 }
 
 func bench(ctx context.Context, c *client.Client, count int, key string, output io.Writer) error {

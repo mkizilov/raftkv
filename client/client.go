@@ -42,6 +42,7 @@ type NodeStatus struct {
 	LeaderKnown bool
 	LeaderID uint64
 	LeaderAddress string
+	VoterIDs []uint64
 	Err error
 }
 
@@ -205,7 +206,10 @@ func (c *Client) Status(ctx context.Context) ([]NodeStatus, error) {
 		r, err := client.Status(attempt, &pb.StatusRequest{})
 		cancel()
 		state := NodeStatus{Address: c.addresses[i], Err: err}
-		if err == nil { state.NodeID, state.Role, state.Term, state.CommitIndex, state.LeaderKnown, state.LeaderID, state.LeaderAddress = r.NodeId, r.Role, r.Term, r.CommitIndex, r.LeaderKnown, r.LeaderId, r.LeaderAddress }
+		if err == nil {
+			state.NodeID, state.Role, state.Term, state.CommitIndex, state.LeaderKnown, state.LeaderID, state.LeaderAddress = r.NodeId, r.Role, r.Term, r.CommitIndex, r.LeaderKnown, r.LeaderId, r.LeaderAddress
+			state.VoterIDs = append([]uint64(nil), r.VoterIds...)
+		}
 		states = append(states, state)
 	}
 	return states, ctx.Err()

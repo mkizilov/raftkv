@@ -315,6 +315,30 @@ server also keeps volatile `commitIndex` and `lastApplied` (initially 0).
 Leaders initialize volatile `nextIndex` for each follower to the leader's last
 log index plus one and `matchIndex` to 0. Index 0 denotes the empty prefix.
 
+## Membership safety and current limitation
+
+Membership is currently fixed by each node's startup configuration. Status
+and `raftctl member list` expose those configured voter IDs, and a node does
+not grant votes or advance its term for a candidate outside that fixed set.
+This is not dynamic membership: `member add` and `member remove`, non-voting
+learners, configuration log entries, and membership recovery from snapshots
+are not implemented. All nodes must be started with the same fixed voter set.
+Do not attempt to change it by restarting individual servers with new flags.
+
+The proposed single-server change protocol requires the latest configuration
+in each server's log to govern elections and quorum decisions even before its
+entry commits; truncation must restore the preceding configuration. A new
+configuration may differ by at most one voter, and the previous change must be
+committed before another begins. A prospective voter must first catch up as a
+non-voting learner. Before proposing any change, a leader must also commit an
+entry from its current term: the original thesis algorithm without that guard
+has a published split-brain/data-loss counterexample for concurrent changes
+across terms. See [Ongaro's correction](https://groups.google.com/g/raft-dev/c/t4xj6dJTP6E)
+and the [thesis](https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf).
+Correct implementation also requires durable configuration metadata in snapshots,
+dynamic transport addresses, a removed leader stepping down after commitment,
+and quorum-safe reads. None of these are supplied by the fixed-set status view.
+
 ## RPCs
 
 **RequestVote** carries `term`, `candidateId`, `lastLogIndex`, and

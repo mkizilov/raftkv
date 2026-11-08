@@ -73,7 +73,9 @@ func (g *GRPC) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusRespo
 	}
 	address := ""
 	if state.LeaderKnown { address = g.LeaderAddresses[state.LeaderID] }
-	return &pb.StatusResponse{NodeId: uint64(g.NodeID), Role: role, Term: state.Term, CommitIndex: state.CommitIndex, LeaderKnown: state.LeaderKnown, LeaderId: uint64(state.LeaderID), LeaderAddress: address}, nil
+	voters := make([]uint64, len(state.Voters))
+	for i, id := range state.Voters { voters[i] = uint64(id) }
+	return &pb.StatusResponse{NodeId: uint64(g.NodeID), Role: role, Term: state.Term, CommitIndex: state.CommitIndex, LeaderKnown: state.LeaderKnown, LeaderId: uint64(state.LeaderID), LeaderAddress: address, VoterIds: voters}, nil
 }
 
 func (g *GRPC) Watch(req *pb.WatchRequest, stream pb.KVService_WatchServer) error {
