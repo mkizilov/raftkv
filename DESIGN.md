@@ -1,8 +1,8 @@
 # RaftKV design
 
-This document specifies the intended implementation. Election and in-memory
-term/vote storage exist, but log replication, durable storage, production
-networking, and the client API do not yet. Raft will
+This document specifies the intended implementation. Election, log replication,
+and in-memory storage exist, but durable storage, production networking, and
+the client API do not yet. Raft will
 be implemented in this repository, not with an existing Raft implementation.
 The protocol below follows Figure 2 of the [Raft paper](https://raft.github.io/raft.pdf).
 
@@ -18,8 +18,7 @@ context cancellation, and callers must use deadlines when they need bounded wait
 Each test uses a fixed seed, overridable with `RAFTKV_TEST_SEED`, and prints it
 on failure. The seed reproduces random decisions for the same call order, but
 cannot reproduce nondeterministic goroutine scheduling by itself. The cluster
-helper uses a node adapter; election tests adapt real nodes to it. The helper
-does not simulate replication.
+helper uses a node adapter; election and replication tests use real nodes.
 
 ## Election implementation and concurrency
 
@@ -32,15 +31,35 @@ and waits for the owner and RPC workers. The storage interface atomically saves
 term and vote before a vote or higher term is reported; a storage error stops
 the node rather than allowing an unsafe response. The provided memory storage
 survives only while its instance remains alive and is not durable across a
-process restart. Nodes must be registered with the transport before Start.
+process restart. Nodes must be registered with the transport before Run.
 
 Election timeouts default to a random duration in [150 ms, 300 ms), with 50 ms
 heartbeats; all are configurable. Each node's seeded RNG is mixed with its ID.
-The vote freshness comparison uses the configured local log tail until actual
-log storage exists. Heartbeats only support an empty log prefix and do not
-replicate entries; snapshot installation is explicitly unsupported. A leader
+The vote freshness comparison uses the persisted local log tail. Snapshot
+installation is explicitly unsupported. A leader
 isolated from the majority remains a leader in its old term until it observes a
 higher term, so clients must not treat its role alone as a linearizable lease.
+
+## Replication implementation
+
+`Start(command)` appends a copied command on the leader and returns its index,
+term, and leadership status without waiting for commit; `Propose` additionally
+accepts a context and reports errors. Application-level client responses must
+wait for commitment and application. Each leader has at most one AppendEntries
+RPC in flight per follower; failures retry on the next heartbeat, and log
+inconsistencies decrement `nextIndex` and retry immediately. Current-term
+entries advance the leader's commit index only after a majority replicates them;
+earlier entries become committed indirectly. Followers persist log changes
+before acknowledging them and never overwrite an already committed entry.
+
+The state owner sends copied committed entries in index order on the configured
+apply channel using a selectable send, so a slow or absent consumer does not
+block elections, RPCs, or shutdown. An absent consumer prevents delivery, not
+commit. Commit and application indexes are volatile: after a restart the owner
+relearns commitment from a leader and may deliver entries again. Consumers must
+account for replay until a durable state-machine recovery protocol is added.
+Storage log replacement is atomic at the interface boundary; the in-memory
+implementation is not durable across process restarts.
 
 ## Raft state
 

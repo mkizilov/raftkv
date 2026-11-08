@@ -22,15 +22,14 @@ const (
 var ErrStopped = errors.New("raft: node stopped")
 var ErrNotImplemented = errors.New("raft: snapshot installation not implemented")
 
-// Config describes a fixed cluster. LastLogIndex and LastLogTerm describe the
-// local log tail for election safety; log replication is not implemented yet.
+// Config describes a fixed cluster.
 type Config struct {
 	ID transport.NodeID
 	Peers []transport.NodeID
 	Transport transport.Transport
 	Storage Storage
 	ElectionMin, ElectionMax, Heartbeat time.Duration
-	LastLogIndex, LastLogTerm uint64
+	ApplyCh chan<- ApplyMsg
 	Seed int64
 }
 
@@ -40,9 +39,16 @@ type Status struct {
 	CommitIndex uint64
 }
 
+type ApplyMsg struct {
+	Index uint64
+	Term uint64
+	Command []byte
+}
+
 type Node struct {
 	config Config
 	initial HardState
+	initialLog []transport.LogEntry
 	events chan func(*nodeState)
 	ctx context.Context
 	cancel context.CancelFunc
@@ -59,6 +65,10 @@ type nodeState struct {
 	random *rand.Rand
 	timer *time.Timer
 	err error
+	log []transport.LogEntry
+	commitIndex, lastApplied uint64
+	nextIndex, matchIndex map[transport.NodeID]uint64
+	inflight map[transport.NodeID]bool
 }
 
 func NewNode(config Config) (*Node, error) {
@@ -79,16 +89,18 @@ func NewNode(config Config) (*Node, error) {
 	config.Peers = append([]transport.NodeID(nil), config.Peers...)
 	hard, err := config.Storage.Load()
 	if err != nil { return nil, fmt.Errorf("raft: load state: %w", err) }
+	log, err := config.Storage.LoadLog()
+	if err != nil { return nil, fmt.Errorf("raft: load log: %w", err) }
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Node{config: config, initial: hard, events: make(chan func(*nodeState), 128), ctx: ctx, cancel: cancel, done: make(chan struct{})}, nil
+	return &Node{config: config, initial: hard, initialLog: cloneLog(log), events: make(chan func(*nodeState), 128), ctx: ctx, cancel: cancel, done: make(chan struct{})}, nil
 }
 
-// Start starts the state owner once, after the handler has been registered.
-func (n *Node) Start() { n.start.Do(func() { go n.run() }) }
+// Run starts the state owner once, after the handler has been registered.
+func (n *Node) Run() { n.start.Do(func() { go n.run() }) }
 
 // Stop cancels outstanding RPCs and waits for the owner and workers to exit.
 func (n *Node) Stop() {
-	n.Start()
+	n.Run()
 	n.cancel()
 	<-n.done
 	n.workers.Wait()
@@ -96,11 +108,20 @@ func (n *Node) Stop() {
 
 func (n *Node) run() {
 	seed := n.config.Seed ^ (int64(n.config.ID) * 6364136223846793005)
-	s := &nodeState{node: n, hard: n.initial, role: Follower, random: rand.New(rand.NewSource(seed))}
+	s := &nodeState{node: n, hard: n.initial, log: n.initialLog, role: Follower, random: rand.New(rand.NewSource(seed))}
 	s.timer = time.NewTimer(s.electionTimeout())
 	defer func() { s.timer.Stop(); n.cancel(); close(n.done) }()
 	for {
+		var apply chan<- ApplyMsg
+		var msg ApplyMsg
+		if s.lastApplied < s.commitIndex {
+			entry := s.log[s.lastApplied]
+			apply = n.config.ApplyCh
+			msg = ApplyMsg{Index: s.lastApplied + 1, Term: entry.Term, Command: append([]byte(nil), entry.Command...)}
+		}
 		select {
+		case apply <- msg:
+			s.lastApplied++
 		case <-n.ctx.Done():
 			return
 		case event := <-n.events:
@@ -156,7 +177,8 @@ func (s *nodeState) elect() {
 	s.votes = map[transport.NodeID]bool{s.node.config.ID: true}
 	s.reset(s.electionTimeout())
 	if len(s.votes) > (len(s.node.config.Peers)+1)/2 { s.becomeLeader(); return }
-	req := transport.RequestVoteRequest{Term: hard.Term, CandidateID: s.node.config.ID, LastLogIndex: s.node.config.LastLogIndex, LastLogTerm: s.node.config.LastLogTerm}
+	last := uint64(len(s.log))
+	req := transport.RequestVoteRequest{Term: hard.Term, CandidateID: s.node.config.ID, LastLogIndex: last, LastLogTerm: s.termAt(last)}
 	for _, peer := range s.node.config.Peers {
 		peer := peer
 		s.node.spawn(func(ctx context.Context) {
@@ -175,18 +197,17 @@ func (s *nodeState) elect() {
 func (s *nodeState) becomeLeader() {
 	s.role = Leader
 	s.votes = nil
+	s.nextIndex = make(map[transport.NodeID]uint64)
+	s.matchIndex = make(map[transport.NodeID]uint64)
+	s.inflight = make(map[transport.NodeID]bool)
+	for _, peer := range s.node.config.Peers { s.nextIndex[peer] = uint64(len(s.log)) + 1 }
 	s.heartbeats()
 	s.reset(s.node.config.Heartbeat)
 }
 
 func (s *nodeState) heartbeats() {
-	req := transport.AppendEntriesRequest{Term: s.hard.Term, LeaderID: s.node.config.ID}
 	for _, peer := range s.node.config.Peers {
-		peer := peer
-		s.node.spawn(func(ctx context.Context) {
-			response, err := s.node.config.Transport.AppendEntries(ctx, peer, req)
-			if err == nil { s.node.post(func(state *nodeState) { state.observeTerm(response.Term) }) }
-		})
+		s.replicate(peer)
 	}
 }
 
@@ -227,14 +248,16 @@ func call[T any](ctx context.Context, n *Node, fn func(*nodeState) (T, error)) (
 }
 
 func (n *Node) Status(ctx context.Context) (Status, error) {
-	return call(ctx, n, func(s *nodeState) (Status, error) { return Status{Term: s.hard.Term, Role: s.role}, nil })
+	return call(ctx, n, func(s *nodeState) (Status, error) { return Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex}, nil })
 }
 
 func (n *Node) RequestVote(ctx context.Context, req transport.RequestVoteRequest) (transport.RequestVoteResponse, error) {
 	return call(ctx, n, func(s *nodeState) (transport.RequestVoteResponse, error) {
 		if !s.observeTerm(req.Term) { return transport.RequestVoteResponse{}, s.err }
 		response := transport.RequestVoteResponse{Term: s.hard.Term}
-		upToDate := req.LastLogTerm > n.config.LastLogTerm || (req.LastLogTerm == n.config.LastLogTerm && req.LastLogIndex >= n.config.LastLogIndex)
+		last := uint64(len(s.log))
+		lastTerm := s.termAt(last)
+		upToDate := req.LastLogTerm > lastTerm || (req.LastLogTerm == lastTerm && req.LastLogIndex >= last)
 		if req.Term == s.hard.Term && upToDate && (!s.hard.HasVote || s.hard.VotedFor == req.CandidateID) {
 			hard := s.hard
 			hard.HasVote, hard.VotedFor = true, req.CandidateID
@@ -247,6 +270,7 @@ func (n *Node) RequestVote(ctx context.Context, req transport.RequestVoteRequest
 }
 
 func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesRequest) (transport.AppendEntriesResponse, error) {
+	req.Entries = cloneLog(req.Entries)
 	return call(ctx, n, func(s *nodeState) (transport.AppendEntriesResponse, error) {
 		if !s.observeTerm(req.Term) { return transport.AppendEntriesResponse{}, s.err }
 		response := transport.AppendEntriesResponse{Term: s.hard.Term}
@@ -254,8 +278,23 @@ func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesReq
 		s.role = Follower
 		s.votes = nil
 		s.reset(s.electionTimeout())
-		// Until replication exists, only the empty log prefix is supported.
-		response.Success = req.PrevLogIndex == 0 && req.PrevLogTerm == 0 && len(req.Entries) == 0
+		if req.PrevLogIndex > uint64(len(s.log)) || s.termAt(req.PrevLogIndex) != req.PrevLogTerm { return response, nil }
+		for i, entry := range req.Entries {
+			index := req.PrevLogIndex + uint64(i) + 1
+			if index <= uint64(len(s.log)) && s.termAt(index) == entry.Term { continue }
+			if index <= s.commitIndex { return response, errors.New("raft: attempted to overwrite committed entry") }
+			updated := cloneLog(s.log[:index-1])
+			updated = append(updated, cloneLog(req.Entries[i:])...)
+			if !s.saveLog(updated) { return transport.AppendEntriesResponse{}, s.err }
+			break
+		}
+		lastNew := req.PrevLogIndex + uint64(len(req.Entries))
+		if req.LeaderCommit > s.commitIndex {
+			commit := req.LeaderCommit
+			if commit > lastNew { commit = lastNew }
+			if commit > s.commitIndex { s.commitIndex = commit }
+		}
+		response.Success = true
 		return response, nil
 	})
 }

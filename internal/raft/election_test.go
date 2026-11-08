@@ -12,9 +12,9 @@ import (
 	"github.com/you/raftkv/internal/transport"
 )
 
-type electionNode struct { *Node; t *testing.T }
+type electionNode struct { *Node; t *testing.T; applied chan ApplyMsg }
 
-func (n *electionNode) start() { n.Start() }
+func (n *electionNode) start() { n.Run() }
 func (n *electionNode) stop() { n.Stop() }
 func (n *electionNode) status() (uint64, bool, uint64) {
 	n.t.Helper()
@@ -36,9 +36,10 @@ func electionCluster(t *testing.T, count int) *testCluster {
 	return newTestCluster(t, count, func(id transport.NodeID, tr transport.Transport) clusterNode {
 		peers := make([]transport.NodeID, 0, count-1)
 		for i := 1; i <= count; i++ { if transport.NodeID(i) != id { peers = append(peers, transport.NodeID(i)) } }
-		node, err := NewNode(Config{ID: id, Peers: peers, Transport: tr, Storage: &MemoryStorage{}, Seed: seed + int64(id)})
+		applied := make(chan ApplyMsg, 128)
+		node, err := NewNode(Config{ID: id, Peers: peers, Transport: tr, Storage: &MemoryStorage{}, Seed: seed + int64(id), ApplyCh: applied})
 		if err != nil { t.Fatal(err) }
-		return &electionNode{Node: node, t: t}
+		return &electionNode{Node: node, t: t, applied: applied}
 	})
 }
 
@@ -97,10 +98,13 @@ func TestElectionAndPartition(t *testing.T) {
 func TestRequestVotePersistenceAndLogFreshness(t *testing.T) {
 	network := transport.NewNetwork(9)
 	store := &MemoryStorage{}
-	config := Config{ID: 1, Transport: network.Endpoint(1), Storage: store, LastLogIndex: 7, LastLogTerm: 3, ElectionMin: time.Hour, ElectionMax: time.Hour, Heartbeat: time.Minute}
+	entries := make([]transport.LogEntry, 7)
+	for i := range entries { entries[i].Term = 3 }
+	if err := store.SaveLog(entries); err != nil { t.Fatal(err) }
+	config := Config{ID: 1, Transport: network.Endpoint(1), Storage: store, ElectionMin: time.Hour, ElectionMax: time.Hour, Heartbeat: time.Minute}
 	node, err := NewNode(config)
 	if err != nil { t.Fatal(err) }
-	node.Start()
+	node.Run()
 	t.Cleanup(func() { node.Stop() })
 	request := func(term, index, logTerm uint64, candidate transport.NodeID) transport.RequestVoteResponse {
 		t.Helper()
@@ -117,7 +121,7 @@ func TestRequestVotePersistenceAndLogFreshness(t *testing.T) {
 	node.Stop()
 	node, err = NewNode(config)
 	if err != nil { t.Fatal(err) }
-	node.Start()
+	node.Run()
 	defer node.Stop()
 	if request(1, 8, 3, 3).VoteGranted { t.Fatal("forgot vote after restart") }
 	if !request(2, 1, 4, 3).VoteGranted { t.Fatal("rejected newer log term") }
@@ -127,23 +131,25 @@ func TestRequestVotePersistenceAndLogFreshness(t *testing.T) {
 type failingStorage struct{}
 func (failingStorage) Load() (HardState, error) { return HardState{}, nil }
 func (failingStorage) Save(HardState) error { return errors.New("disk failure") }
+func (failingStorage) LoadLog() ([]transport.LogEntry, error) { return nil, nil }
+func (failingStorage) SaveLog([]transport.LogEntry) error { return errors.New("disk failure") }
 
 func TestPersistenceFailureStopsNode(t *testing.T) {
 	network := transport.NewNetwork(1)
 	node, err := NewNode(Config{ID: 1, Transport: network.Endpoint(1), Storage: failingStorage{}})
 	if err != nil { t.Fatal(err) }
-	node.Start()
+	node.Run()
 	defer node.Stop()
 	_, err = node.RequestVote(context.Background(), transport.RequestVoteRequest{Term: 1, CandidateID: 2})
 	if err == nil || err.Error() != "raft: persist state: disk failure" { t.Fatalf("persistence error: %v", err) }
 }
 
-func TestHeartbeatUpdatesTermAndRejectsUnsupportedEntries(t *testing.T) {
+func TestHeartbeatUpdatesTermAndRejectsMissingPrefix(t *testing.T) {
 	network := transport.NewNetwork(1)
 	store := &MemoryStorage{}
 	node, err := NewNode(Config{ID: 1, Transport: network.Endpoint(1), Storage: store, ElectionMin: time.Hour, ElectionMax: time.Hour, Heartbeat: time.Minute})
 	if err != nil { t.Fatal(err) }
-	node.Start()
+	node.Run()
 	defer node.Stop()
 	ctx := context.Background()
 	response, err := node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 3, LeaderID: 2})
@@ -152,6 +158,6 @@ func TestHeartbeatUpdatesTermAndRejectsUnsupportedEntries(t *testing.T) {
 	if err != nil || state.Term != 3 || state.HasVote { t.Fatalf("persisted state: %+v, %v", state, err) }
 	response, err = node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 2, LeaderID: 2})
 	if err != nil || response.Success || response.Term != 3 { t.Fatalf("stale heartbeat: %+v, %v", response, err) }
-	response, err = node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 3, LeaderID: 2, Entries: []transport.LogEntry{{Term: 3}}})
-	if err != nil || response.Success { t.Fatalf("unsupported append: %+v, %v", response, err) }
+	response, err = node.AppendEntries(ctx, transport.AppendEntriesRequest{Term: 3, LeaderID: 2, PrevLogIndex: 1, PrevLogTerm: 3})
+	if err != nil || response.Success { t.Fatalf("missing prefix: %+v, %v", response, err) }
 }
