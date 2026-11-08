@@ -76,6 +76,7 @@ func TestBacktrackHints(t *testing.T) {
 		{3, transport.AppendEntriesResponse{ConflictIndex: 1, ConflictTerm: 3, HasConflictTerm: true}, 2},
 		{3, transport.AppendEntriesResponse{}, 2},
 		{1, transport.AppendEntriesResponse{ConflictIndex: 1}, 1},
+		{1, transport.AppendEntriesResponse{ConflictIndex: 4, Compacted: true}, 4},
 	}
 	for _, test := range tests {
 		if got := s.backtrack(test.next, test.response); got != test.want { t.Fatalf("backtrack(%d, %+v) = %d, want %d", test.next, test.response, got, test.want) }

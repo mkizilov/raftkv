@@ -41,8 +41,7 @@ process restart. Nodes must be registered with the transport before Run.
 
 Election timeouts default to a random duration in [150 ms, 300 ms), with 50 ms
 heartbeats; all are configurable. Each node's seeded RNG is mixed with its ID.
-The vote freshness comparison uses the persisted local log tail. Snapshot
-installation is explicitly unsupported. A leader
+The vote freshness comparison uses the persisted local log tail. A leader
 isolated from the majority remains a leader in its old term until it observes a
 higher term, so clients must not treat its role alone as a linearizable lease.
 
@@ -71,6 +70,24 @@ account for replay until a durable state-machine recovery protocol is added.
 Storage log replacement is atomic at the interface boundary; the in-memory
 implementation is not durable across process restarts.
 
+## Snapshots
+
+After applying an entry, the service may call `Snapshot(index, data)` with its
+complete state through that index. Raft persists the image, its index and term,
+and the retained suffix atomically before discarding the prefix in memory.
+Indexes remain absolute; the snapshot boundary supplies the preceding term for
+AppendEntries and voting. A leader sends InstallSnapshot when a follower's next
+index falls behind that boundary, then resumes normal suffix replication.
+InstallSnapshot currently sends a complete image in one RPC; nonzero offsets and
+partial chunks are rejected. A snapshot and its retained suffix must fit the
+storage record limit described below.
+
+On restart or installation, Raft sends an `ApplyMsg` with `SnapshotValid`,
+snapshot index, term and bytes before sending later committed log entries.
+The service must restore that image before processing subsequent messages and
+must create a snapshot only after applying its index. An image may be replayed
+after restart; commit and application positions after the snapshot are volatile.
+
 ## Disk storage and recovery
 
 `OpenDiskStorage` requires an existing, exclusively owned directory; concurrent
@@ -81,17 +98,19 @@ contains a version, term, vote and checksum. A replacement is written to a temp
 file in that directory, synced, renamed over the state file, and followed by a
 directory sync. Log changes append a versioned, checksummed record describing
 the retained prefix and replacement suffix, then sync the log before returning.
-The log file is created and its directory synced on open. The current design
-retains all records and has a 64 MiB limit per encoded mutation; compaction and
-snapshots are future work.
+The log file is created and its directory synced on open. On snapshot, a new
+log file containing the image and suffix is synced, atomically renamed over the
+old file, and followed by a directory sync; subsequent mutations append to it.
+This bounds retained disk log history when the service snapshots regularly.
+Each encoded mutation, including an image and suffix, is limited to 64 MiB.
 
 Recovery replays complete records and truncates and syncs an incomplete final
 header or payload. A complete record with an invalid header or checksum, an
 invalid prefix, or a corrupt state file causes an error rather than silently
 discarding potentially acknowledged data. A write or sync failure poisons the
 storage instance; the node stops and must be reopened to recover its on-disk
-state. A crash during state replacement may leave a `.state-*` temp file; it is
-never used for recovery. Successful saves remove their temporary file. Commit
+state. A crash during replacement may leave a `.state-*` or `.log-*` temp file;
+neither is used for recovery. Successful saves remove their temporary file. Commit
 and apply positions remain volatile and a recovered state machine must tolerate
 replay; disk storage alone does not provide application-level exactly-once
 execution. File sync and rename durability assume a filesystem honoring those

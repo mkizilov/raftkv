@@ -133,6 +133,8 @@ func (failingStorage) Load() (HardState, error) { return HardState{}, nil }
 func (failingStorage) Save(HardState) error { return errors.New("disk failure") }
 func (failingStorage) LoadLog() ([]transport.LogEntry, error) { return nil, nil }
 func (failingStorage) SaveLog([]transport.LogEntry) error { return errors.New("disk failure") }
+func (failingStorage) LoadSnapshot() (SnapshotState, error) { return SnapshotState{}, nil }
+func (failingStorage) SaveSnapshot(SnapshotState, []transport.LogEntry) error { return errors.New("disk failure") }
 
 func TestPersistenceFailureStopsNode(t *testing.T) {
 	network := transport.NewNetwork(1)

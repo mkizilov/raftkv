@@ -20,7 +20,6 @@ const (
 )
 
 var ErrStopped = errors.New("raft: node stopped")
-var ErrNotImplemented = errors.New("raft: snapshot installation not implemented")
 
 // Config describes a fixed cluster.
 type Config struct {
@@ -43,12 +42,16 @@ type ApplyMsg struct {
 	Index uint64
 	Term uint64
 	Command []byte
+	SnapshotValid bool
+	SnapshotIndex, SnapshotTerm uint64
+	Snapshot []byte
 }
 
 type Node struct {
 	config Config
 	initial HardState
 	initialLog []transport.LogEntry
+	initialSnapshot SnapshotState
 	events chan func(*nodeState)
 	ctx context.Context
 	cancel context.CancelFunc
@@ -66,6 +69,8 @@ type nodeState struct {
 	timer *time.Timer
 	err error
 	log []transport.LogEntry
+	snapshot SnapshotState
+	pendingSnapshot *SnapshotState
 	commitIndex, lastApplied uint64
 	nextIndex, matchIndex map[transport.NodeID]uint64
 	inflight map[transport.NodeID]bool
@@ -91,8 +96,10 @@ func NewNode(config Config) (*Node, error) {
 	if err != nil { return nil, fmt.Errorf("raft: load state: %w", err) }
 	log, err := config.Storage.LoadLog()
 	if err != nil { return nil, fmt.Errorf("raft: load log: %w", err) }
+	snapshot, err := config.Storage.LoadSnapshot()
+	if err != nil { return nil, fmt.Errorf("raft: load snapshot: %w", err) }
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Node{config: config, initial: hard, initialLog: cloneLog(log), events: make(chan func(*nodeState), 128), ctx: ctx, cancel: cancel, done: make(chan struct{})}, nil
+	return &Node{config: config, initial: hard, initialLog: cloneLog(log), initialSnapshot: cloneSnapshot(snapshot), events: make(chan func(*nodeState), 128), ctx: ctx, cancel: cancel, done: make(chan struct{})}, nil
 }
 
 // Run starts the state owner once, after the handler has been registered.
@@ -108,20 +115,24 @@ func (n *Node) Stop() {
 
 func (n *Node) run() {
 	seed := n.config.Seed ^ (int64(n.config.ID) * 6364136223846793005)
-	s := &nodeState{node: n, hard: n.initial, log: n.initialLog, role: Follower, random: rand.New(rand.NewSource(seed))}
+	s := &nodeState{node: n, hard: n.initial, log: n.initialLog, snapshot: n.initialSnapshot, role: Follower, random: rand.New(rand.NewSource(seed)), commitIndex: n.initialSnapshot.Index, lastApplied: n.initialSnapshot.Index}
+	if s.snapshot.Index > 0 { snapshot := cloneSnapshot(s.snapshot); s.pendingSnapshot = &snapshot }
 	s.timer = time.NewTimer(s.electionTimeout())
 	defer func() { s.timer.Stop(); n.cancel(); close(n.done) }()
 	for {
 		var apply chan<- ApplyMsg
 		var msg ApplyMsg
-		if s.lastApplied < s.commitIndex {
-			entry := s.log[s.lastApplied]
+		if s.pendingSnapshot != nil {
+			apply = n.config.ApplyCh
+			msg = ApplyMsg{SnapshotValid: true, SnapshotIndex: s.pendingSnapshot.Index, SnapshotTerm: s.pendingSnapshot.Term, Snapshot: append([]byte(nil), s.pendingSnapshot.Data...)}
+		} else if s.lastApplied < s.commitIndex {
+			entry := s.log[s.lastApplied-s.snapshot.Index]
 			apply = n.config.ApplyCh
 			msg = ApplyMsg{Index: s.lastApplied + 1, Term: entry.Term, Command: append([]byte(nil), entry.Command...)}
 		}
 		select {
 		case apply <- msg:
-			s.lastApplied++
+			if msg.SnapshotValid { s.pendingSnapshot = nil } else { s.lastApplied++ }
 		case <-n.ctx.Done():
 			return
 		case event := <-n.events:
@@ -177,7 +188,7 @@ func (s *nodeState) elect() {
 	s.votes = map[transport.NodeID]bool{s.node.config.ID: true}
 	s.reset(s.electionTimeout())
 	if len(s.votes) > (len(s.node.config.Peers)+1)/2 { s.becomeLeader(); return }
-	last := uint64(len(s.log))
+	last := s.lastIndex()
 	req := transport.RequestVoteRequest{Term: hard.Term, CandidateID: s.node.config.ID, LastLogIndex: last, LastLogTerm: s.termAt(last)}
 	for _, peer := range s.node.config.Peers {
 		peer := peer
@@ -200,7 +211,7 @@ func (s *nodeState) becomeLeader() {
 	s.nextIndex = make(map[transport.NodeID]uint64)
 	s.matchIndex = make(map[transport.NodeID]uint64)
 	s.inflight = make(map[transport.NodeID]bool)
-	for _, peer := range s.node.config.Peers { s.nextIndex[peer] = uint64(len(s.log)) + 1 }
+	for _, peer := range s.node.config.Peers { s.nextIndex[peer] = s.lastIndex() + 1 }
 	s.heartbeats()
 	s.reset(s.node.config.Heartbeat)
 }
@@ -255,7 +266,7 @@ func (n *Node) RequestVote(ctx context.Context, req transport.RequestVoteRequest
 	return call(ctx, n, func(s *nodeState) (transport.RequestVoteResponse, error) {
 		if !s.observeTerm(req.Term) { return transport.RequestVoteResponse{}, s.err }
 		response := transport.RequestVoteResponse{Term: s.hard.Term}
-		last := uint64(len(s.log))
+		last := s.lastIndex()
 		lastTerm := s.termAt(last)
 		upToDate := req.LastLogTerm > lastTerm || (req.LastLogTerm == lastTerm && req.LastLogIndex >= last)
 		if req.Term == s.hard.Term && upToDate && (!s.hard.HasVote || s.hard.VotedFor == req.CandidateID) {
@@ -278,8 +289,13 @@ func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesReq
 		s.role = Follower
 		s.votes = nil
 		s.reset(s.electionTimeout())
-		if req.PrevLogIndex > uint64(len(s.log)) {
-			response.ConflictIndex = uint64(len(s.log)) + 1
+		if req.PrevLogIndex < s.snapshot.Index {
+			response.ConflictIndex = s.snapshot.Index + 1
+			response.Compacted = true
+			return response, nil
+		}
+		if req.PrevLogIndex > s.lastIndex() {
+			response.ConflictIndex = s.lastIndex() + 1
 			return response, nil
 		}
 		if s.termAt(req.PrevLogIndex) != req.PrevLogTerm {
@@ -287,14 +303,14 @@ func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesReq
 			response.ConflictTerm = s.termAt(req.PrevLogIndex)
 			response.HasConflictTerm = true
 			response.ConflictIndex = req.PrevLogIndex
-			for response.ConflictIndex > 1 && s.termAt(response.ConflictIndex-1) == response.ConflictTerm { response.ConflictIndex-- }
+			for response.ConflictIndex > s.snapshot.Index && s.termAt(response.ConflictIndex-1) == response.ConflictTerm { response.ConflictIndex-- }
 			return response, nil
 		}
 		for i, entry := range req.Entries {
 			index := req.PrevLogIndex + uint64(i) + 1
-			if index <= uint64(len(s.log)) && s.termAt(index) == entry.Term { continue }
+			if index <= s.lastIndex() && s.termAt(index) == entry.Term { continue }
 			if index <= s.commitIndex { return response, errors.New("raft: attempted to overwrite committed entry") }
-			updated := cloneLog(s.log[:index-1])
+			updated := cloneLog(s.log[:index-s.snapshot.Index-1])
 			updated = append(updated, cloneLog(req.Entries[i:])...)
 			if !s.saveLog(updated) { return transport.AppendEntriesResponse{}, s.err }
 			break
@@ -307,12 +323,5 @@ func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesReq
 		}
 		response.Success = true
 		return response, nil
-	})
-}
-
-func (n *Node) InstallSnapshot(ctx context.Context, req transport.InstallSnapshotRequest) (transport.InstallSnapshotResponse, error) {
-	return call(ctx, n, func(s *nodeState) (transport.InstallSnapshotResponse, error) {
-		if !s.observeTerm(req.Term) { return transport.InstallSnapshotResponse{}, s.err }
-		return transport.InstallSnapshotResponse{Term: s.hard.Term}, ErrNotImplemented
 	})
 }

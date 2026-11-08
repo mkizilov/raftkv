@@ -32,6 +32,7 @@ type AppendEntriesResponse struct {
 	ConflictTerm      uint64
 	ConflictIndex     uint64
 	HasConflictTerm   bool
+	Compacted         bool
 }
 
 // InstallSnapshot carries one snapshot chunk. Offset and Done allow streaming

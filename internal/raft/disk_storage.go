@@ -20,6 +20,7 @@ const maxRecordSize = 64 << 20
 type logMutation struct {
 	Prefix uint64
 	Entries []transport.LogEntry
+	Snapshot *SnapshotState `json:",omitempty"`
 }
 
 // DiskStorage owns one directory; callers must not open it concurrently from
@@ -29,6 +30,7 @@ type DiskStorage struct {
 	file *os.File
 	state HardState
 	log []transport.LogEntry
+	snapshot SnapshotState
 	err error
 	ops chan diskOp
 	done chan struct{}
@@ -105,6 +107,11 @@ func (s *DiskStorage) recoverLog() error {
 		if crc32.ChecksumIEEE(payload) != binary.BigEndian.Uint32(header[8:12]) { return fmt.Errorf("raft: corrupt log record at %d", offset) }
 		var mutation logMutation
 		if err := json.Unmarshal(payload, &mutation); err != nil { return fmt.Errorf("raft: invalid log record at %d: %w", offset, err) }
+		if mutation.Snapshot != nil {
+			if mutation.Prefix != 0 || mutation.Snapshot.Index == 0 || mutation.Snapshot.Index < s.snapshot.Index { return fmt.Errorf("raft: invalid snapshot at %d", offset) }
+			s.snapshot = cloneSnapshot(*mutation.Snapshot)
+			s.log = nil
+		}
 		if mutation.Prefix > uint64(len(s.log)) { return fmt.Errorf("raft: invalid log prefix at %d", offset) }
 		s.log = append(s.log[:mutation.Prefix], mutation.Entries...)
 		offset += int64(len(header)) + int64(size)
@@ -166,21 +173,57 @@ func (s *DiskStorage) SaveLog(entries []transport.LogEntry) error {
 	return err
 }
 
-func (s *DiskStorage) saveLog(entries []transport.LogEntry) error {
-	if s.err != nil { return s.err }
-	prefix := 0
-	for prefix < len(s.log) && prefix < len(entries) && s.log[prefix].Term == entries[prefix].Term && bytes.Equal(s.log[prefix].Command, entries[prefix].Command) { prefix++ }
-	if prefix == len(s.log) && prefix == len(entries) { return nil }
-	payload, err := json.Marshal(logMutation{Prefix: uint64(prefix), Entries: entries[prefix:]})
-	if err != nil { return err }
-	if len(payload) > maxRecordSize { return errors.New("raft: log mutation exceeds maximum record size") }
+func (s *DiskStorage) LoadSnapshot() (SnapshotState, error) {
+	return diskCall(s, func() (SnapshotState, error) { return cloneSnapshot(s.snapshot), s.err })
+}
+
+func (s *DiskStorage) SaveSnapshot(snapshot SnapshotState, entries []transport.LogEntry) error {
+	snapshot, entries = cloneSnapshot(snapshot), cloneLog(entries)
+	_, err := diskCall(s, func() (struct{}, error) { return struct{}{}, s.replaceSnapshot(snapshot, entries) })
+	return err
+}
+
+func encodeRecord(mutation logMutation) ([]byte, error) {
+	payload, err := json.Marshal(mutation)
+	if err != nil { return nil, err }
+	if len(payload) > maxRecordSize { return nil, errors.New("raft: log mutation exceeds maximum record size") }
 	var header [16]byte
 	copy(header[:4], "RKL1")
 	binary.BigEndian.PutUint32(header[4:8], uint32(len(payload)))
 	binary.BigEndian.PutUint32(header[8:12], crc32.ChecksumIEEE(payload))
 	binary.BigEndian.PutUint32(header[12:16], crc32.ChecksumIEEE(header[:12]))
-	_, err = io.Copy(s.file, bytes.NewReader(header[:]))
-	if err == nil { _, err = io.Copy(s.file, bytes.NewReader(payload)) }
+	return append(header[:], payload...), nil
+}
+
+func (s *DiskStorage) replaceSnapshot(snapshot SnapshotState, entries []transport.LogEntry) error {
+	if s.err != nil { return s.err }
+	if snapshot.Index == 0 || snapshot.Index < s.snapshot.Index { return errors.New("raft: invalid snapshot index") }
+	record, err := encodeRecord(logMutation{Entries: entries, Snapshot: &snapshot})
+	if err != nil { return err }
+	f, err := os.CreateTemp(s.dir, ".log-*")
+	if err != nil { return err }
+	name := f.Name()
+	defer os.Remove(name)
+	_, err = io.Copy(f, bytes.NewReader(record))
+	if err == nil { err = f.Sync() }
+	if err == nil { err = os.Rename(name, filepath.Join(s.dir, "log")) }
+	if err == nil { err = syncDir(s.dir) }
+	if err != nil { _ = f.Close(); s.err = err; return err }
+	old := s.file
+	s.file = f
+	s.snapshot, s.log = cloneSnapshot(snapshot), cloneLog(entries)
+	if err = old.Close(); err != nil { s.err = err }
+	return err
+}
+
+func (s *DiskStorage) saveLog(entries []transport.LogEntry) error {
+	if s.err != nil { return s.err }
+	prefix := 0
+	for prefix < len(s.log) && prefix < len(entries) && s.log[prefix].Term == entries[prefix].Term && bytes.Equal(s.log[prefix].Command, entries[prefix].Command) { prefix++ }
+	if prefix == len(s.log) && prefix == len(entries) { return nil }
+	record, err := encodeRecord(logMutation{Prefix: uint64(prefix), Entries: entries[prefix:]})
+	if err != nil { return err }
+	_, err = io.Copy(s.file, bytes.NewReader(record))
 	if err == nil { err = s.file.Sync() }
 	if err != nil { s.err = err; return err }
 	s.log = cloneLog(entries)

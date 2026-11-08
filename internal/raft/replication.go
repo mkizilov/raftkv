@@ -8,9 +8,11 @@ import (
 )
 
 func (s *nodeState) termAt(index uint64) uint64 {
-	if index == 0 { return 0 }
-	return s.log[index-1].Term
+	if index == s.snapshot.Index { return s.snapshot.Term }
+	return s.log[index-s.snapshot.Index-1].Term
 }
+
+func (s *nodeState) lastIndex() uint64 { return s.snapshot.Index + uint64(len(s.log)) }
 
 func (s *nodeState) saveLog(entries []transport.LogEntry) bool {
 	if err := s.node.config.Storage.SaveLog(entries); err != nil {
@@ -43,7 +45,7 @@ func (n *Node) Propose(ctx context.Context, command []byte) (index, term uint64,
 		entries := cloneLog(s.log)
 		entries = append(entries, transport.LogEntry{Term: s.hard.Term, Command: command})
 		if !s.saveLog(entries) { return result, s.err }
-		result.index, result.leader = uint64(len(s.log)), true
+		result.index, result.leader = s.lastIndex(), true
 		s.advanceCommit()
 		s.heartbeats()
 		return result, nil
@@ -54,11 +56,12 @@ func (n *Node) Propose(ctx context.Context, command []byte) (index, term uint64,
 func (s *nodeState) replicate(peer transport.NodeID) {
 	if s.inflight[peer] { return }
 	next := s.nextIndex[peer]
+	if next <= s.snapshot.Index { s.sendSnapshot(peer); return }
 	prev := next - 1
 	req := transport.AppendEntriesRequest{
 		Term: s.hard.Term, LeaderID: s.node.config.ID,
 		PrevLogIndex: prev, PrevLogTerm: s.termAt(prev),
-		Entries: cloneLog(s.log[prev:]), LeaderCommit: s.commitIndex,
+		Entries: cloneLog(s.log[prev-s.snapshot.Index:]), LeaderCommit: s.commitIndex,
 	}
 	s.inflight[peer] = true
 	s.node.spawn(func(ctx context.Context) {
@@ -77,7 +80,7 @@ func (s *nodeState) replicate(peer transport.NodeID) {
 			state.matchIndex[peer] = matched
 			state.nextIndex[peer] = matched + 1
 			state.advanceCommit()
-			if matched < uint64(len(state.log)) { state.replicate(peer) }
+			if matched < state.lastIndex() { state.replicate(peer) }
 		})
 	})
 }
@@ -85,19 +88,21 @@ func (s *nodeState) replicate(peer transport.NodeID) {
 // backtrack finds the leader's last entry in the conflicting term, or uses the
 // follower's first index in that term (or its end + 1 if it is too short).
 func (s *nodeState) backtrack(next uint64, response transport.AppendEntriesResponse) uint64 {
+	if response.Compacted && response.ConflictIndex > next && response.ConflictIndex <= s.lastIndex()+1 { return response.ConflictIndex }
 	if next <= 1 { return 1 }
 	target := response.ConflictIndex
 	if response.HasConflictTerm {
-		for i := uint64(len(s.log)); i > 0; i-- {
+		for i := s.lastIndex(); i > s.snapshot.Index; i-- {
 			if s.termAt(i) == response.ConflictTerm { target = i + 1; break }
 		}
+		if target == response.ConflictIndex && s.snapshot.Index > 0 && s.snapshot.Term == response.ConflictTerm { target = s.snapshot.Index + 1 }
 	}
 	if target == 0 || target >= next { return next - 1 }
 	return target
 }
 
 func (s *nodeState) advanceCommit() {
-	for index := uint64(len(s.log)); index > s.commitIndex; index-- {
+	for index := s.lastIndex(); index > s.commitIndex; index-- {
 		if s.termAt(index) != s.hard.Term { continue }
 		count := 1
 		for _, peer := range s.node.config.Peers {
