@@ -78,6 +78,41 @@ The process-failure integration test builds a race-enabled server, binds
 loopback ports 21880–21885, kills the leader, and checks the continuing workload;
 it requires the local Go toolchain and generated bindings.
 
+## Process chaos harness
+
+`go run ./cmd/chaos -duration=10m -seed=20261107` builds a race-enabled server
+inside a temporary project-local directory and starts five real node processes.
+Each node has a client proxy and a separate directed TCP proxy for every other
+node, all on loopback ports 21800–21839. Directed links allow a 2/3 partition
+without relying on host firewalls or Docker. Partitions close existing proxied
+connections as well as rejecting new ones; latency delays traffic in both
+directions. A seeded schedule kills and restarts nodes with their data intact,
+partitions links, injects latency, and freezes/resumes child processes using
+SIGSTOP/SIGCONT. Seeded choices are reproducible, but process scheduling and
+TCP timing are not.
+
+Two concurrent clients issue unique logical Put, Get and CAS operations on
+two keys, and record invocation/return times and results across client retries.
+When fault injection ends, links are healed and in-flight calls get up to 30
+seconds to drain. An incomplete/ambiguous operation fails the run; it is never
+silently omitted from a passing history. Porcupine partitions by key and checks
+the versioned model, with a 60-second checker timeout treated as failure. History
+is capped at 50,000 completed operations and reaching the cap fails the run;
+the default 300 ms inter-operation delay keeps the ten-minute workload bounded.
+The summary includes the seed, fault counts, operation counts and checker
+verdict. A failing or timed-out check writes an HTML visualization under
+`.agent-local/chaos-failures/`. Owned processes, proxy listeners and temporary
+data are cleaned up on exit; if a process cannot be stopped, its exact PID and
+the preserved temporary directory are reported.
+
+`docker-compose.yml` runs the same five child processes and proxies inside one
+isolated container, with no Docker socket or host ports mounted. The image is
+pinned by digest and uses project-local caches; it is a reproducible variant,
+not a five-container distributed deployment. Docker execution is unverified in
+this sandbox because host Docker access is forbidden. The required ten-minute
+native chaos run also remains unverified until the local Go toolchain and
+generated protobuf bindings are available.
+
 ## Election implementation and concurrency
 
 Each node has one goroutine owning its term, vote, role, election timer, and

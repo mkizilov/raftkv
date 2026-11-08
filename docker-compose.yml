@@ -1,0 +1,10 @@
+services:
+  chaos:
+    build:
+      context: .
+      dockerfile: Dockerfile.chaos
+    init: true
+    stop_grace_period: 45s
+    cpus: 2
+    mem_limit: 2g
+    command: ["-duration=10m", "-seed=20261107"]

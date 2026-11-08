@@ -1,0 +1,16 @@
+FROM golang:1.24.10-bookworm@sha256:aaa1dedbfef846dbd62fa803cecd7486b0e98a32cb6f68656eee20acac5dd53a
+WORKDIR /workspace
+ENV HOME=/workspace/.agent-local/home \
+    TMPDIR=/workspace/.agent-local/tmp \
+    GOPATH=/workspace/.agent-local/go \
+    GOMODCACHE=/workspace/.agent-local/go/pkg/mod \
+    GOCACHE=/workspace/.agent-local/cache/go-build \
+    GOFLAGS=-p=2 \
+    GOMAXPROCS=2
+COPY . .
+RUN mkdir -p "$HOME" "$TMPDIR" "$GOMODCACHE" "$GOCACHE" /workspace/.agent-local/bin \
+    && GOFLAGS='-p=2 -mod=mod' go tool buf generate \
+    && go mod tidy \
+    && go build -o /workspace/.agent-local/bin/chaos ./cmd/chaos
+ENTRYPOINT ["/workspace/.agent-local/bin/chaos"]
+CMD ["-duration=10m", "-seed=20261107"]
