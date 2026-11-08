@@ -215,3 +215,32 @@ leader's local state alone is insufficient.
 Watch events reflect applied committed log order; this does not by itself make a
 watch stream a linearizable read. Failure and retry semantics remain to be
 specified with the implementation.
+
+## ReadIndex and history checking
+
+`raft.Node.ReadIndex` requires a committed entry from the current leader's term,
+then sends a fresh AppendEntries heartbeat round and waits for a same-term
+majority. A follower's log-consistency rejection still acknowledges the term;
+the probe carries no entries or commit advancement. It returns the commit index
+captured before the round, and callers must wait until their state machine has
+applied at least that index. A new leader without a committed current-term entry
+returns `ErrReadNotReady`; this implementation does not automatically append a
+no-op. Context cancellation aborts the round.
+
+`Server.ReadLatest` uses this barrier, waits for the KV apply loop, and serves
+a fresh read without appending a log entry. It has no client request identity:
+each retry is a new read and can return a newer value. The existing `Get` remains
+log-based and preserves its replicated exactly-once read-result cache. Replacing
+it outright with a read-only quorum round would lose the original result of a
+retried read after a leader change; replicated result storage or an explicit API
+contract change is required before that replacement is safe.
+
+KV test histories record invocation and return times, arguments and outcomes and
+are checked against a versioned, deduplicating Porcupine model. Concurrent fault
+tests record each logical request across its retries. A timed-out operation is
+modeled as either not executed or executed by its return; effects occurring
+later can make this conservative model reject a valid history. Checker timeouts
+are failures, not passes. A failing check writes an HTML visualization under
+`.agent-local/linearizability/`. `go test -race -run '^$' -bench BenchmarkReads
+./internal/kv` compares logged Get with ReadLatest; they have different retry
+contracts and no throughput result is assumed without running the benchmark.

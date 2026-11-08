@@ -51,6 +51,8 @@ type image struct {
 type requestID struct { client string; sequence uint64 }
 type response struct { result Result; err error }
 type waiter struct { command command; ch chan response }
+type readQuery struct { key string; reply chan readState }
+type readState struct { index uint64; result Result }
 
 // Server applies committed commands in order. Register Node as the transport
 // handler before calling Start. A zero snapshot threshold disables snapshots;
@@ -65,6 +67,8 @@ type Server struct {
 	start sync.Once
 	mu sync.Mutex
 	pending map[requestID]map[*waiter]struct{}
+	reads chan readQuery
+	applied chan struct{}
 	err error
 	state image // owned exclusively by the apply goroutine
 }
@@ -76,7 +80,7 @@ func New(config raft.Config, snapshotThreshold uint64) (*Server, error) {
 	node, err := raft.NewNode(config)
 	if err != nil { return nil, err }
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{node: node, apply: apply, threshold: snapshotThreshold, ctx: ctx, cancel: cancel, done: make(chan struct{}), pending: make(map[requestID]map[*waiter]struct{}), state: image{Format: 1, Values: make(map[string]Result), Requests: make(map[string]map[uint64]record)}}, nil
+	return &Server{node: node, apply: apply, threshold: snapshotThreshold, ctx: ctx, cancel: cancel, done: make(chan struct{}), reads: make(chan readQuery), applied: make(chan struct{}), pending: make(map[requestID]map[*waiter]struct{}), state: image{Format: 1, Values: make(map[string]Result), Requests: make(map[string]map[uint64]record)}}, nil
 }
 
 func (s *Server) Node() *raft.Node { return s.node }
@@ -106,6 +110,8 @@ func (s *Server) run() {
 		select {
 		case <-s.ctx.Done(): return
 		case <-s.node.Done(): return
+		case query := <-s.reads:
+			query.reply <- readState{index: s.state.Index, result: s.state.Values[query.key]}
 		case msg := <-s.apply:
 			if err := s.applyMessage(msg); err != nil {
 				s.mu.Lock()
@@ -119,6 +125,44 @@ func (s *Server) run() {
 
 func (s *Server) Get(ctx context.Context, client string, sequence uint64, key string) (Result, error) {
 	return s.execute(ctx, command{ClientID: client, Sequence: sequence, Operation: "get", Key: key})
+}
+
+// ReadLatest is a linearizable read without a client request identity. Unlike
+// Get, retries are independent reads and do not return a cached prior result.
+func (s *Server) ReadLatest(ctx context.Context, key string) (Result, error) {
+	if key == "" { return Result{}, errors.New("kv: key is required") }
+	index, _, err := s.node.ReadIndex(ctx)
+	if errors.Is(err, raft.ErrNotLeader) { return Result{}, ErrNotLeader }
+	if err != nil { return Result{}, err }
+	for {
+		s.mu.Lock()
+		changed := s.applied
+		s.mu.Unlock()
+		reply := make(chan readState, 1)
+		select {
+		case s.reads <- readQuery{key: key, reply: reply}:
+		case <-ctx.Done(): return Result{}, ctx.Err()
+		case <-s.done: return Result{}, s.failure()
+		}
+		select {
+		case state := <-reply:
+			if state.index >= index { return state.result, nil }
+		case <-ctx.Done(): return Result{}, ctx.Err()
+		case <-s.done: return Result{}, s.failure()
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done(): return Result{}, ctx.Err()
+		case <-s.done: return Result{}, s.failure()
+		}
+	}
+}
+
+func (s *Server) advanceApplied() {
+	s.mu.Lock()
+	close(s.applied)
+	s.applied = make(chan struct{})
+	s.mu.Unlock()
 }
 
 func (s *Server) Put(ctx context.Context, client string, sequence uint64, key, value string) (Result, error) {
@@ -182,6 +226,7 @@ func (s *Server) applyMessage(msg raft.ApplyMsg) error {
 		if restored.Format != 1 || restored.Index != msg.SnapshotIndex || restored.Values == nil || restored.Requests == nil { return errors.New("kv: invalid snapshot state") }
 		if restored.Index <= s.state.Index { return nil }
 		s.state = restored
+		s.advanceApplied()
 		for client, requests := range s.state.Requests {
 			for sequence, r := range requests { s.notify(requestID{client, sequence}, r) }
 		}
@@ -214,6 +259,7 @@ func (s *Server) applyMessage(msg raft.ApplyMsg) error {
 		requests[cmd.Sequence] = r
 	}
 	s.state.Index = msg.Index
+	s.advanceApplied()
 	s.notify(requestID{cmd.ClientID, cmd.Sequence}, r)
 	if s.threshold == 0 { return nil }
 	status, err := s.node.Status(s.ctx)

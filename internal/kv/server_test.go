@@ -16,8 +16,9 @@ import (
 
 type testCluster struct {
 	network *transport.Network
-	servers []*Server
+	servers []*recordedServer
 	stores []*raft.MemoryStorage
+	history *historyRecorder
 }
 
 func makeCluster(t *testing.T, count int, threshold uint64) *testCluster {
@@ -28,7 +29,8 @@ func makeCluster(t *testing.T, count int, threshold uint64) *testCluster {
 		seed, err = strconv.ParseInt(value, 10, 64)
 		if err != nil { t.Fatal(err) }
 	}
-	c := &testCluster{network: transport.NewNetwork(seed), servers: make([]*Server, count), stores: make([]*raft.MemoryStorage, count)}
+	c := &testCluster{network: transport.NewNetwork(seed), servers: make([]*recordedServer, count), stores: make([]*raft.MemoryStorage, count), history: newHistory()}
+	t.Cleanup(func() { c.history.check(t) })
 	t.Cleanup(func() { for _, s := range c.servers { if s != nil { s.Close() } } })
 	t.Cleanup(func() { if t.Failed() { t.Logf("replay with RAFTKV_TEST_SEED=%d", seed) } })
 	for i := range c.servers {
@@ -38,7 +40,7 @@ func makeCluster(t *testing.T, count int, threshold uint64) *testCluster {
 		c.stores[i] = &raft.MemoryStorage{}
 		server, err := New(raft.Config{ID: id, Peers: peers, Transport: c.network.Endpoint(id), Storage: c.stores[i], Seed: seed + int64(id)}, threshold)
 		if err != nil { t.Fatal(err) }
-		c.servers[i] = server
+		c.servers[i] = &recordedServer{Server: server, history: c.history}
 		c.network.Register(id, server.Node())
 	}
 	for _, server := range c.servers { server.Start() }
@@ -161,13 +163,13 @@ func TestSnapshotRestoresValuesAndDeduplication(t *testing.T) {
 	id := transport.NodeID(leader + 1)
 	restarted, err := New(raft.Config{ID: id, Transport: c.network.Endpoint(id), Storage: c.stores[leader]}, 1)
 	if err != nil { t.Fatal(err) }
-	c.servers[leader] = restarted
+	c.servers[leader] = &recordedServer{Server: restarted, history: c.history}
 	c.network.Register(id, restarted.Node())
 	restarted.Start()
 	c.leader(t, -1)
-	retry, err := restarted.Put(ctx, "writer", 1, "key", "value")
+	retry, err := c.servers[leader].Put(ctx, "writer", 1, "key", "value")
 	if err != nil || retry != first { t.Fatalf("retry after snapshot: %+v %v", retry, err) }
-	got, err := restarted.Get(ctx, "reader", 1, "key")
+	got, err := c.servers[leader].Get(ctx, "reader", 1, "key")
 	if err != nil || !got.Found || got.Value != "value" || got.Version != 1 { t.Fatalf("restored value: %+v %v", got, err) }
 }
 
