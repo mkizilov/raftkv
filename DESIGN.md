@@ -1,8 +1,8 @@
 # RaftKV design
 
 This document specifies the intended implementation. Election, log replication,
-file-backed storage, and an in-process replicated KV API exist. A gRPC transport
-and client API are implemented but require generated protobuf bindings. Raft will
+file-backed storage, an in-process replicated KV API, and a gRPC client and
+transport are implemented but require generated protobuf bindings. Raft will
 be implemented in this repository, not with an existing Raft implementation.
 The protocol below follows Figure 2 of the [Raft paper](https://raft.github.io/raft.pdf).
 
@@ -52,7 +52,31 @@ The integration test binds loopback ports 21860–21865.
 
 This transport currently uses plaintext, unauthenticated gRPC and is intended
 only for trusted local testing; do not expose it to untrusted networks. Watch,
-TLS, membership changes, and a networked CLI are not yet implemented.
+TLS, and membership changes are not yet implemented.
+
+## Client and CLI
+
+The `client` package reuses one gRPC connection per configured endpoint. It
+follows not-leader hints only if the advertised address is in the configured
+endpoint list, otherwise rotates through configured nodes. Transient unavailable
+and per-attempt deadline errors are retried with bounded exponential backoff
+and jitter until the caller's context expires. Each operation reserves a client
+ID and sequence once and reuses them across all internal attempts. A context
+deadline or cancellation is ambiguous: a write may have committed despite the
+error. Callers that need to retry after the method returns must reserve and
+persist a `RequestID` with `NewRequest`, then retry the identical operation via
+its `WithID` method. Reusing a client ID across processes requires an externally
+persisted, coordinated sequence counter; the default is a fresh random ID.
+
+`raftctl` accepts global flags before its command: `-endpoints`, `-timeout`,
+and optionally `-client-id` with `-sequence` for a repeatable request identity.
+Commands are `get key`, `put key value`, `delete key`, `cas key version value`,
+`status`, and `bench count key`. Status reports each endpoint's role, leader,
+term, and commit index, including per-node errors. Bench performs actual logged
+reads with two workers and reports completed operations and measured throughput.
+The process-failure integration test builds a race-enabled server, binds
+loopback ports 21880–21885, kills the leader, and checks the continuing workload;
+it requires the local Go toolchain and generated bindings.
 
 ## Election implementation and concurrency
 
@@ -124,8 +148,7 @@ with the transport, then start the server. `Get`, `Put`, `Delete`, and
 only after the matching request has been committed and applied. Context expiry
 is ambiguous: the command may still commit, so retry with the same identity and
 arguments. A disconnected former leader cannot serve a new local read without
-committing it. This is an in-process API; transport-facing client RPCs are not
-yet implemented.
+committing it. The same operations are exposed through the gRPC client API.
 
 Every request includes a nonempty client ID and a positive, increasing sequence
 number. The replicated state stores the original command and result for every

@@ -1,16 +1,104 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/you/raftkv/client"
 )
 
-func run(w io.Writer) {
-	fmt.Fprintln(w, "raftctl: client not yet implemented")
+func run(ctx context.Context, args []string, output, errorOutput io.Writer) (runErr error) {
+	flags := flag.NewFlagSet("raftctl", flag.ContinueOnError)
+	flags.SetOutput(errorOutput)
+	endpoints := flags.String("endpoints", "127.0.0.1:21801,127.0.0.1:21803,127.0.0.1:21805", "comma-separated client endpoints")
+	timeout := flags.Duration("timeout", 10*time.Second, "overall operation timeout")
+	clientID := flags.String("client-id", "", "persistent client ID (requires -sequence for operations)")
+	sequence := flags.Uint64("sequence", 0, "request sequence to use with -client-id")
+	if err := flags.Parse(args); err != nil { return err }
+	if *timeout <= 0 || flags.NArg() == 0 { return errors.New("usage: raftctl [flags] get|put|delete|cas|status|bench ...") }
+	command, values := flags.Arg(0), flags.Args()[1:]
+	if *sequence > 0 && *clientID == "" { return errors.New("-sequence requires -client-id") }
+	if *clientID != "" && *sequence == 0 && command != "status" { return errors.New("-client-id requires a positive -sequence") }
+	initial := uint64(0)
+	if *sequence > 0 { initial = *sequence - 1 }
+	c, err := client.New(client.Config{Endpoints: strings.Split(*endpoints, ","), ClientID: *clientID, InitialSequence: initial})
+	if err != nil { return err }
+	defer func() { runErr = errors.Join(runErr, c.Close()) }()
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	var result client.Result
+	switch command {
+	case "get":
+		if len(values) != 1 { return errors.New("usage: get key") }
+		result, err = c.Get(ctx, values[0])
+	case "put":
+		if len(values) != 2 { return errors.New("usage: put key value") }
+		result, err = c.Put(ctx, values[0], values[1])
+	case "delete":
+		if len(values) != 1 { return errors.New("usage: delete key") }
+		result, err = c.Delete(ctx, values[0])
+	case "cas":
+		if len(values) != 3 { return errors.New("usage: cas key expected-version value") }
+		version, parseErr := strconv.ParseUint(values[1], 10, 64)
+		if parseErr != nil { return fmt.Errorf("invalid expected version: %w", parseErr) }
+		result, err = c.CompareAndSwap(ctx, values[0], version, values[2])
+	case "status":
+		if len(values) != 0 { return errors.New("usage: status") }
+		states, statusErr := c.Status(ctx)
+		for _, state := range states {
+			entry := struct { Address string; NodeID uint64; Role string; Term, CommitIndex uint64; LeaderKnown bool; LeaderID uint64; LeaderAddress, Error string }{Address: state.Address, NodeID: state.NodeID, Role: state.Role, Term: state.Term, CommitIndex: state.CommitIndex, LeaderKnown: state.LeaderKnown, LeaderID: state.LeaderID, LeaderAddress: state.LeaderAddress}
+			if state.Err != nil { entry.Error = state.Err.Error() }
+			if err := json.NewEncoder(output).Encode(entry); err != nil { return err }
+		}
+		return statusErr
+	case "bench":
+		if len(values) != 2 { return errors.New("usage: bench count key") }
+		count, parseErr := strconv.Atoi(values[0])
+		if parseErr != nil || count < 1 || count > 1000000 { return errors.New("bench count must be between 1 and 1000000") }
+		return bench(ctx, c, count, values[1], output)
+	default: return fmt.Errorf("unknown command %q", command)
+	}
+	if err != nil { return err }
+	return json.NewEncoder(output).Encode(result)
+}
+
+func bench(ctx context.Context, c *client.Client, count int, key string, output io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var next, completed atomic.Int64
+	var workers sync.WaitGroup
+	errs := make(chan error, 2)
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for next.Add(1) <= int64(count) {
+				if _, err := c.Get(ctx, key); err != nil { errs <- err; cancel(); return }
+				completed.Add(1)
+			}
+		}()
+	}
+	workers.Wait()
+	close(errs)
+	for err := range errs { if err != nil { return fmt.Errorf("bench completed %d/%d: %w", completed.Load(), count, err) } }
+	elapsed := time.Since(start)
+	return json.NewEncoder(output).Encode(struct { Operations int64; Seconds, OperationsPerSecond float64 }{completed.Load(), elapsed.Seconds(), float64(completed.Load()) / elapsed.Seconds()})
 }
 
 func main() {
-	run(os.Stderr)
-	os.Exit(1)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 }

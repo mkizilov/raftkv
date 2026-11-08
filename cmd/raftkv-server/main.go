@@ -83,7 +83,7 @@ func serve(ctx context.Context, c config) (result error) {
 	raftServer := grpc.NewServer(grpc.MaxRecvMsgSize(maxMessage), grpc.MaxSendMsgSize(maxMessage))
 	clientServer := grpc.NewServer(grpc.MaxRecvMsgSize(maxMessage), grpc.MaxSendMsgSize(maxMessage))
 	pb.RegisterRaftServiceServer(raftServer, &grpctransport.Handler{Node: service.Node()})
-	pb.RegisterKVServiceServer(clientServer, &kv.GRPC{Server: service, LeaderAddresses: c.clientPeers})
+	pb.RegisterKVServiceServer(clientServer, &kv.GRPC{Server: service, NodeID: c.id, LeaderAddresses: c.clientPeers})
 	service.Start()
 	errs := make(chan error, 2)
 	go func() { errs <- raftServer.Serve(raftListener) }()

@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bytes"
+	"context"
+	"io"
 	"testing"
 )
 
-func TestRun(t *testing.T) {
-	var output bytes.Buffer
-	run(&output)
-	if got, want := output.String(), "raftctl: client not yet implemented\n"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
+func TestInvalidArguments(t *testing.T) {
+	for _, args := range [][]string{{}, {"get"}, {"put", "key"}, {"cas", "key", "bad", "value"}, {"bench", "0", "key"}, {"-client-id", "client", "get", "key"}, {"unknown"}} {
+		if err := run(context.Background(), args, io.Discard, io.Discard); err == nil { t.Fatalf("accepted %v", args) }
 	}
 }

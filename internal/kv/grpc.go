@@ -15,6 +15,7 @@ import (
 type GRPC struct {
 	pb.UnimplementedKVServiceServer
 	Server *Server
+	NodeID transport.NodeID
 	LeaderAddresses map[transport.NodeID]string
 }
 
@@ -60,4 +61,17 @@ func (g *GRPC) CompareAndSwap(ctx context.Context, req *pb.CompareAndSwapRequest
 	id := req.GetIdentity()
 	r, err := g.Server.CompareAndSwap(ctx, id.GetClientId(), id.GetSequence(), req.GetKey(), req.GetExpectedVersion(), req.GetValue())
 	return g.response(ctx, r, err)
+}
+
+func (g *GRPC) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResponse, error) {
+	state, err := g.Server.Node().Status(ctx)
+	if err != nil { return nil, status.Error(codes.Unavailable, err.Error()) }
+	role := "follower"
+	switch state.Role {
+	case raft.Candidate: role = "candidate"
+	case raft.Leader: role = "leader"
+	}
+	address := ""
+	if state.LeaderKnown { address = g.LeaderAddresses[state.LeaderID] }
+	return &pb.StatusResponse{NodeId: uint64(g.NodeID), Role: role, Term: state.Term, CommitIndex: state.CommitIndex, LeaderKnown: state.LeaderKnown, LeaderId: uint64(state.LeaderID), LeaderAddress: address}, nil
 }
