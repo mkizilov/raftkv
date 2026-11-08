@@ -22,10 +22,12 @@ func TestClientRecoversAfterLeaderProcessKilled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	processes := make([]*testProcess, 0, 3)
 	var workers sync.WaitGroup
+	var watchers sync.WaitGroup
 	var c *Client
 	t.Cleanup(func() {
 		cancel()
 		workers.Wait()
+		watchers.Wait()
 		if c != nil { if err := c.Close(); err != nil { t.Error(err) } }
 		for _, p := range processes {
 			if !p.waited {
@@ -57,6 +59,23 @@ func TestClientRecoversAfterLeaderProcessKilled(t *testing.T) {
 		if leader < 0 { time.Sleep(20 * time.Millisecond) }
 	}
 	if leader < 0 { t.Fatal("no leader elected") }
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	watchEvents := make(chan WatchEvent, 64)
+	watchDone := make(chan error, 1)
+	watchers.Add(1)
+	go func() {
+		defer watchers.Done()
+		watchDone <- c.Watch(watchCtx, "key-", 0, func(event WatchEvent) error {
+			select { case watchEvents <- event: return nil; case <-watchCtx.Done(): return watchCtx.Err() }
+		})
+	}()
+	seen := make(map[string]uint64)
+	checkEvent := func(event WatchEvent) {
+		t.Helper()
+		if event.Version != seen[event.Key]+1 || event.Deleted { t.Fatalf("watch event out of order: %+v after %d", event, seen[event.Key]) }
+		seen[event.Key] = event.Version
+	}
 	ready := make(chan error, 2)
 	started := make(chan struct{}, 2)
 	results := make(chan error, 2)
@@ -84,6 +103,11 @@ func TestClientRecoversAfterLeaderProcessKilled(t *testing.T) {
 		}()
 	}
 	for i := 0; i < 2; i++ { if err := <-ready; err != nil { t.Fatal(err) } }
+	select {
+	case event := <-watchEvents: checkEvent(event)
+	case err := <-watchDone: t.Fatalf("watch ended before failure: %v", err)
+	case <-ctx.Done(): t.Fatal(ctx.Err())
+	}
 	close(resume)
 	for i := 0; i < 2; i++ { <-started }
 	if err := processes[leader].command.Process.Kill(); err != nil { t.Fatal(err) }
@@ -91,4 +115,13 @@ func TestClientRecoversAfterLeaderProcessKilled(t *testing.T) {
 	processes[leader].waited = true
 	workers.Wait()
 	for i := 0; i < 2; i++ { if err := <-results; err != nil { t.Fatal(err) } }
+	for seen["key-0"] < 11 || seen["key-1"] < 11 {
+		select {
+		case event := <-watchEvents: checkEvent(event)
+		case err := <-watchDone: t.Fatalf("watch ended during recovery: %v", err)
+		case <-ctx.Done(): t.Fatalf("watch did not catch up: %v", ctx.Err())
+		}
+	}
+	stopWatch()
+	select { case <-watchDone: case <-time.After(time.Second): t.Fatal("watch did not stop") }
 }

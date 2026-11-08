@@ -75,3 +75,21 @@ func (g *GRPC) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusRespo
 	if state.LeaderKnown { address = g.LeaderAddresses[state.LeaderID] }
 	return &pb.StatusResponse{NodeId: uint64(g.NodeID), Role: role, Term: state.Term, CommitIndex: state.CommitIndex, LeaderKnown: state.LeaderKnown, LeaderId: uint64(state.LeaderID), LeaderAddress: address}, nil
 }
+
+func (g *GRPC) Watch(req *pb.WatchRequest, stream pb.KVService_WatchServer) error {
+	err := g.Server.Watch(stream.Context(), req.GetPrefix(), req.GetAfterRevision(), func(event WatchEvent) error {
+		return stream.Send(&pb.WatchEvent{Revision: event.Revision, Key: event.Key, Value: event.Value, Version: event.Version, Deleted: event.Deleted})
+	})
+	if err == nil { return nil }
+	var compacted *CompactedError
+	if errors.As(err, &compacted) {
+		st, detailErr := status.New(codes.OutOfRange, compacted.Error()).WithDetails(&pb.WatchCompactedDetail{CompactedRevision: compacted.Revision})
+		if detailErr != nil { return status.Error(codes.Internal, detailErr.Error()) }
+		return st.Err()
+	}
+	if errors.Is(err, ErrWatchQuorum) { return status.Error(codes.Unavailable, err.Error()) }
+	if errors.Is(err, ErrNotLeader) { _, err = g.response(stream.Context(), Result{}, err); return err }
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) { return status.FromContextError(err).Err() }
+	if _, ok := status.FromError(err); ok { return err }
+	return status.Error(codes.Unavailable, err.Error())
+}

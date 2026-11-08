@@ -47,6 +47,9 @@ type image struct {
 	Index uint64
 	Values map[string]Result
 	Requests map[string]map[uint64]record
+	HistoryFormat int
+	CompactedRevision uint64
+	Events []WatchEvent
 }
 
 type requestID struct { client string; sequence uint64 }
@@ -69,6 +72,7 @@ type Server struct {
 	mu sync.Mutex
 	pending map[requestID]map[*waiter]struct{}
 	reads chan readQuery
+	watches chan watchQuery
 	applied chan struct{}
 	err error
 	state image // owned exclusively by the apply goroutine
@@ -81,7 +85,7 @@ func New(config raft.Config, snapshotThreshold uint64) (*Server, error) {
 	node, err := raft.NewNode(config)
 	if err != nil { return nil, err }
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{node: node, apply: apply, threshold: snapshotThreshold, ctx: ctx, cancel: cancel, done: make(chan struct{}), reads: make(chan readQuery), applied: make(chan struct{}), pending: make(map[requestID]map[*waiter]struct{}), state: image{Format: 1, Values: make(map[string]Result), Requests: make(map[string]map[uint64]record)}}, nil
+	return &Server{node: node, apply: apply, threshold: snapshotThreshold, ctx: ctx, cancel: cancel, done: make(chan struct{}), reads: make(chan readQuery), watches: make(chan watchQuery), applied: make(chan struct{}), pending: make(map[requestID]map[*waiter]struct{}), state: image{Format: 1, HistoryFormat: 1, Values: make(map[string]Result), Requests: make(map[string]map[uint64]record)}}, nil
 }
 
 func (s *Server) Node() *raft.Node { return s.node }
@@ -113,6 +117,8 @@ func (s *Server) run() {
 		case <-s.node.Done(): return
 		case query := <-s.reads:
 			query.reply <- readState{index: s.state.Index, result: s.state.Values[query.key]}
+		case query := <-s.watches:
+			if s.state.Index < query.barrier { query.reply <- watchResult{scanned: query.after} } else { query.reply <- s.nextWatch(query.prefix, query.after) }
 		case msg := <-s.apply:
 			if err := s.applyMessage(msg); err != nil {
 				s.mu.Lock()
@@ -226,6 +232,16 @@ func (s *Server) applyMessage(msg raft.ApplyMsg) error {
 		if err := json.Unmarshal(msg.Snapshot, &restored); err != nil { return fmt.Errorf("kv: invalid snapshot: %w", err) }
 		if restored.Format != 1 || restored.Index != msg.SnapshotIndex || restored.Values == nil || restored.Requests == nil { return errors.New("kv: invalid snapshot state") }
 		if restored.Index <= s.state.Index { return nil }
+		if restored.HistoryFormat == 0 { restored.HistoryFormat, restored.CompactedRevision = 1, restored.Index }
+		if restored.HistoryFormat != 1 || len(restored.Events) > watchHistoryLimit || restored.CompactedRevision > restored.Index { return errors.New("kv: invalid snapshot event history") }
+		lastRevision := restored.CompactedRevision
+		historyBytes := 0
+		for _, event := range restored.Events {
+			if event.Revision <= lastRevision || event.Revision > restored.Index || event.Key == "" || event.Version == 0 || (event.Deleted && event.Value != "") { return errors.New("kv: invalid snapshot watch event") }
+			historyBytes += watchEventSize(event)
+			if historyBytes > watchHistoryByteLimit { return errors.New("kv: snapshot watch history exceeds byte limit") }
+			lastRevision = event.Revision
+		}
 		s.state = restored
 		s.advanceApplied()
 		for client, requests := range s.state.Requests {
@@ -236,6 +252,11 @@ func (s *Server) applyMessage(msg raft.ApplyMsg) error {
 	if msg.Index != s.state.Index+1 { return fmt.Errorf("kv: applied index %d after %d", msg.Index, s.state.Index) }
 	var cmd command
 	if err := json.Unmarshal(msg.Command, &cmd); err != nil { return fmt.Errorf("kv: invalid command: %w", err) }
+	if cmd.Operation == "watch_barrier" {
+		s.state.Index = msg.Index
+		s.advanceApplied()
+		return s.snapshotIfNeeded(msg.Index)
+	}
 	if cmd.ClientID == "" || cmd.Sequence == 0 || cmd.Key == "" { return errors.New("kv: invalid committed command") }
 	if cmd.Operation != "get" && cmd.Operation != "put" && cmd.Operation != "delete" && cmd.Operation != "cas" { return errors.New("kv: unknown committed operation") }
 	requests := s.state.Requests[cmd.ClientID]
@@ -253,6 +274,7 @@ func (s *Server) applyMessage(msg raft.ApplyMsg) error {
 				current.Value, current.Found = cmd.Value, cmd.Operation != "delete"
 				if !current.Found { current.Value = "" }
 				s.state.Values[cmd.Key] = current
+				s.recordWatch(WatchEvent{Revision: msg.Index, Key: cmd.Key, Value: current.Value, Version: current.Version, Deleted: !current.Found})
 			}
 			r.Result = current
 			r.Result.Swapped = cmd.Operation == "cas" && write
@@ -262,12 +284,16 @@ func (s *Server) applyMessage(msg raft.ApplyMsg) error {
 	s.state.Index = msg.Index
 	s.advanceApplied()
 	s.notify(requestID{cmd.ClientID, cmd.Sequence}, r)
+	return s.snapshotIfNeeded(msg.Index)
+}
+
+func (s *Server) snapshotIfNeeded(index uint64) error {
 	if s.threshold == 0 { return nil }
 	status, err := s.node.Status(s.ctx)
 	if err != nil { return err }
 	if status.LogBytes < s.threshold { return nil }
 	data, err := json.Marshal(s.state)
 	if err != nil { return fmt.Errorf("kv: encode snapshot: %w", err) }
-	if err = s.node.Snapshot(msg.Index, data); err != nil && !errors.Is(err, raft.ErrSnapshotOutdated) { return fmt.Errorf("kv: create snapshot: %w", err) }
+	if err = s.node.Snapshot(index, data); err != nil && !errors.Is(err, raft.ErrSnapshotOutdated) { return fmt.Errorf("kv: create snapshot: %w", err) }
 	return nil
 }

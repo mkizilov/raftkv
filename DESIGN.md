@@ -51,8 +51,8 @@ partitions. Clients must retry safely with the same identity and sequence.
 The integration test binds loopback ports 21860–21865.
 
 This transport currently uses plaintext, unauthenticated gRPC and is intended
-only for trusted local testing; do not expose it to untrusted networks. Watch,
-TLS, and membership changes are not yet implemented.
+only for trusted local testing; do not expose it to untrusted networks. TLS and
+membership changes are not yet implemented.
 
 ## Client and CLI
 
@@ -71,7 +71,7 @@ persisted, coordinated sequence counter; the default is a fresh random ID.
 `raftctl` accepts global flags before its command: `-endpoints`, `-timeout`,
 and optionally `-client-id` with `-sequence` for a repeatable request identity.
 Commands are `get key`, `put key value`, `delete key`, `cas key version value`,
-`status`, and `bench count key`. Status reports each endpoint's role, leader,
+`status`, `bench count key`, and `watch prefix`. Status reports each endpoint's role, leader,
 term, and commit index, including per-node errors. Bench performs actual logged
 reads with two workers and reports completed operations and measured throughput.
 The process-failure integration test builds a race-enabled server, binds
@@ -171,6 +171,38 @@ the image precedes subsequent apply messages, preserving deduplication through
 leader changes and restarts. Snapshot size can still grow with retained client
 history and is subject to Raft's record-size limit.
 
+## Watch
+
+`Watch(prefix, afterRevision)` streams committed changes for keys with that
+prefix, in Raft log order. Revisions are global log indexes, so gaps are normal;
+the cursor is exclusive and zero requests all retained events. Each new Put,
+Delete (including an absent-key tombstone), or successful CAS emits one event;
+retries, reads and failed CAS operations do not. Events carry revision, key,
+value, version and deletion status. Up to 128 change events and at most 1 MiB
+of event payload plus per-event accounting are retained. An event larger than
+the byte budget compacts history through that event, requiring affected watchers
+to re-read. The retained events and revision through which history was evicted are part of the replicated state-machine
+snapshot. A legacy snapshot without history marks its whole prefix compacted.
+
+Before starting, the leader establishes a ReadIndex barrier; if its term has no
+committed entry, the service proposes an internal no-op barrier. The apply loop
+must reach that index before events are served. The stream periodically confirms
+leadership with a fresh quorum round and ends on term change or quorum loss. The
+client reconnects and resumes after the last event successfully passed to its
+callback. It must persist that revision itself for process restarts. A slow or
+disconnected consumer whose cursor precedes the compacted revision receives an
+`OUT_OF_RANGE` error with `WatchCompactedDetail` and must re-read full state;
+the present API has no prefix-list operation, so applications must obtain a
+full key list from another source. Filters may conservatively report compaction
+when only unrelated events were evicted. A blocked gRPC send applies backpressure
+without holding Raft or state-machine locks.
+
+`raftctl [-after-revision N] watch prefix` prints one JSON event per line and
+runs until interrupted by default. An explicit `-timeout` bounds it. Exactly-once
+delivery across a callback failure or process crash requires the application to
+persist the event and its cursor atomically; the stream itself is resumable, not
+an exactly-once delivery mechanism.
+
 ## Disk storage and recovery
 
 `OpenDiskStorage` requires an existing, exclusively owned directory; concurrent
@@ -255,8 +287,8 @@ last new entry when `leaderCommit` is greater.
 * `Put(key, value)` stores a value; `Delete(key)` removes a key.
 * `CompareAndSwap(key, expectedVersion, replacement)` atomically replaces a value
   only when its current version matches, and reports success or failure.
-* `Watch` streams committed changes to selected keys; precise selection, resume,
-  and backpressure semantics will be specified when the API is implemented.
+* `Watch(prefix, afterRevision)` streams retained and future committed changes
+  after an exclusive revision, or reports that history was compacted.
 
 Reads and writes are intended to be linearizable: each completed operation
 appears to take effect at a single point between invocation and response,

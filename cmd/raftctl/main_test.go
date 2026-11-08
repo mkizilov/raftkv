@@ -7,7 +7,7 @@ import (
 )
 
 func TestInvalidArguments(t *testing.T) {
-	for _, args := range [][]string{{}, {"get"}, {"put", "key"}, {"cas", "key", "bad", "value"}, {"bench", "0", "key"}, {"-client-id", "client", "get", "key"}, {"unknown"}} {
+	for _, args := range [][]string{{}, {"get"}, {"put", "key"}, {"cas", "key", "bad", "value"}, {"bench", "0", "key"}, {"-client-id", "client", "get", "key"}, {"watch"}, {"-after-revision", "bad", "watch", "prefix"}, {"unknown"}} {
 		if err := run(context.Background(), args, io.Discard, io.Discard); err == nil { t.Fatalf("accepted %v", args) }
 	}
 }

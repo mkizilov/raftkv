@@ -63,6 +63,7 @@ service KVService {
   rpc Delete(DeleteRequest) returns (KVResponse);
   rpc CompareAndSwap(CompareAndSwapRequest) returns (KVResponse);
   rpc Status(StatusRequest) returns (StatusResponse);
+  rpc Watch(WatchRequest) returns (stream WatchEvent);
 }
 
 message RequestIdentity {
@@ -100,3 +101,15 @@ message StatusResponse {
   uint64 leader_id = 6;
   string leader_address = 7;
 }
+
+// after_revision is an exclusive cursor; zero requests all retained events.
+message WatchRequest { string prefix = 1; uint64 after_revision = 2; }
+message WatchEvent {
+  uint64 revision = 1;
+  string key = 2;
+  string value = 3;
+  uint64 version = 4;
+  bool deleted = 5;
+}
+// Attached to OUT_OF_RANGE when the cursor predates retained history.
+message WatchCompactedDetail { uint64 compacted_revision = 1; }

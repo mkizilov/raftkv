@@ -25,17 +25,23 @@ func run(ctx context.Context, args []string, output, errorOutput io.Writer) (run
 	timeout := flags.Duration("timeout", 10*time.Second, "overall operation timeout")
 	clientID := flags.String("client-id", "", "persistent client ID (requires -sequence for operations)")
 	sequence := flags.Uint64("sequence", 0, "request sequence to use with -client-id")
+	after := flags.Uint64("after-revision", 0, "watch cursor (exclusive)")
 	if err := flags.Parse(args); err != nil { return err }
-	if *timeout <= 0 || flags.NArg() == 0 { return errors.New("usage: raftctl [flags] get|put|delete|cas|status|bench ...") }
+	if *timeout < 0 || flags.NArg() == 0 { return errors.New("usage: raftctl [flags] get|put|delete|cas|status|bench|watch ...") }
 	command, values := flags.Arg(0), flags.Args()[1:]
 	if *sequence > 0 && *clientID == "" { return errors.New("-sequence requires -client-id") }
-	if *clientID != "" && *sequence == 0 && command != "status" { return errors.New("-client-id requires a positive -sequence") }
+	if *clientID != "" && *sequence == 0 && command != "status" && command != "watch" { return errors.New("-client-id requires a positive -sequence") }
 	initial := uint64(0)
 	if *sequence > 0 { initial = *sequence - 1 }
 	c, err := client.New(client.Config{Endpoints: strings.Split(*endpoints, ","), ClientID: *clientID, InitialSequence: initial})
 	if err != nil { return err }
 	defer func() { runErr = errors.Join(runErr, c.Close()) }()
-	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	timeoutSet := false
+	flags.Visit(func(f *flag.Flag) { if f.Name == "timeout" { timeoutSet = true } })
+	if command != "watch" && *timeout == 0 { return errors.New("timeout must be positive") }
+	if command == "watch" && !timeoutSet { *timeout = 0 }
+	cancel := func() {}
+	if *timeout > 0 { ctx, cancel = context.WithTimeout(ctx, *timeout) }
 	defer cancel()
 	var result client.Result
 	switch command {
@@ -67,6 +73,9 @@ func run(ctx context.Context, args []string, output, errorOutput io.Writer) (run
 		count, parseErr := strconv.Atoi(values[0])
 		if parseErr != nil || count < 1 || count > 1000000 { return errors.New("bench count must be between 1 and 1000000") }
 		return bench(ctx, c, count, values[1], output)
+	case "watch":
+		if len(values) != 1 { return errors.New("usage: watch prefix") }
+		return c.Watch(ctx, values[0], *after, func(event client.WatchEvent) error { return json.NewEncoder(output).Encode(event) })
 	default: return fmt.Errorf("unknown command %q", command)
 	}
 	if err != nil { return err }

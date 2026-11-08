@@ -17,10 +17,20 @@ type readBarrier struct { index, term uint64 }
 // The leader must first commit an entry in its own term; otherwise callers may
 // retry after normal replication establishes that condition.
 func (n *Node) ReadIndex(ctx context.Context) (uint64, uint64, error) {
+	return n.confirmLeader(ctx, true)
+}
+
+// ConfirmLeader establishes current quorum contact, but does not authorize a
+// state read: unlike ReadIndex it does not require a current-term commit.
+func (n *Node) ConfirmLeader(ctx context.Context) (uint64, uint64, error) {
+	return n.confirmLeader(ctx, false)
+}
+
+func (n *Node) confirmLeader(ctx context.Context, requireCommit bool) (uint64, uint64, error) {
 	reply := make(chan result[readBarrier], 1)
 	_, err := call(ctx, n, func(s *nodeState) (struct{}, error) {
 		if s.role != Leader { return struct{}{}, ErrNotLeader }
-		if s.commitIndex == 0 || s.termAt(s.commitIndex) != s.hard.Term { return struct{}{}, ErrReadNotReady }
+		if requireCommit && (s.commitIndex == 0 || s.termAt(s.commitIndex) != s.hard.Term) { return struct{}{}, ErrReadNotReady }
 		barrier := readBarrier{index: s.commitIndex, term: s.hard.Term}
 		votes := 1
 		if votes > (len(n.config.Peers)+1)/2 { reply <- result[readBarrier]{value: barrier}; return struct{}{}, nil }
