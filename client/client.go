@@ -170,6 +170,13 @@ func (c *Client) GetWithID(ctx context.Context, id RequestID, key string) (Resul
 	req := &pb.GetRequest{Identity: identity, Key: key}
 	return c.retry(requestContext(ctx, id), func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.Get(ctx, req) })
 }
+
+// ReadLatest uses ReadIndex without a deduplicated request ID. A retry is a
+// fresh read and can return a different value from an earlier attempt.
+func (c *Client) ReadLatest(ctx context.Context, key string) (Result, error) {
+	req := &pb.ReadLatestRequest{Key: key}
+	return c.retry(ctx, func(ctx context.Context, client pb.KVServiceClient) (*pb.KVResponse, error) { return client.ReadLatest(ctx, req) })
+}
 func (c *Client) Put(ctx context.Context, key, value string) (Result, error) {
 	id, err := c.NewRequest(); if err != nil { return Result{}, err }; return c.PutWithID(ctx, id, key, value)
 }

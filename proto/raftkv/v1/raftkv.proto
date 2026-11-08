@@ -59,6 +59,7 @@ message InstallSnapshotResponse { uint64 term = 1; }
 
 service KVService {
   rpc Get(GetRequest) returns (KVResponse);
+  rpc ReadLatest(ReadLatestRequest) returns (KVResponse);
   rpc Put(PutRequest) returns (KVResponse);
   rpc Delete(DeleteRequest) returns (KVResponse);
   rpc CompareAndSwap(CompareAndSwapRequest) returns (KVResponse);
@@ -72,6 +73,7 @@ message RequestIdentity {
 }
 
 message GetRequest { RequestIdentity identity = 1; string key = 2; }
+message ReadLatestRequest { string key = 1; }
 message PutRequest { RequestIdentity identity = 1; string key = 2; string value = 3; }
 message DeleteRequest { RequestIdentity identity = 1; string key = 2; }
 message CompareAndSwapRequest {

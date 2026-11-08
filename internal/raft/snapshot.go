@@ -57,7 +57,7 @@ func (n *Node) InstallSnapshot(ctx context.Context, req transport.InstallSnapsho
 		s.votes = nil
 		s.leaderID, s.leaderKnown = req.LeaderID, true
 		s.reset(s.electionTimeout())
-		if !req.Done || req.Offset != 0 || req.LastIncludedIndex == 0 { return response, errors.New("raft: invalid or unsupported snapshot chunk") }
+		if !req.Done || req.Offset != 0 || req.LastIncludedIndex == 0 || req.LastIncludedIndex == ^uint64(0) { return response, errors.New("raft: invalid or unsupported snapshot chunk") }
 		if req.LastIncludedIndex <= s.commitIndex { return response, nil }
 		var suffix []transport.LogEntry
 		if req.LastIncludedIndex <= s.lastIndex() && s.termAt(req.LastIncludedIndex) == req.LastIncludedTerm {

@@ -34,6 +34,7 @@ type config struct {
 	installErrorHandler bool
 	raftPeers, clientPeers map[transport.NodeID]string
 	snapshotThreshold uint64
+	benchmarkNoFsync bool
 }
 
 func parseConfig(args []string, output io.Writer) (config, error) {
@@ -48,11 +49,12 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 	dataDir := flags.String("data-dir", "", "node data directory")
 	peers := flags.String("peers", "", "comma-separated id=raft-address@client-address entries including self")
 	threshold := flags.Uint64("snapshot-bytes", 1<<20, "logical log bytes before snapshot; zero disables")
+	noFsync := flags.Bool("benchmark-no-fsync", false, "UNSAFE benchmark only: disable durable fsync")
 	if err := flags.Parse(args); err != nil { return config{}, err }
 	if flags.NArg() != 0 || *id == 0 || *dataDir == "" || *peers == "" { return config{}, errors.New("id, data-dir and peers are required") }
 	var logLevel slog.Level
 	if err := logLevel.UnmarshalText([]byte(strings.ToUpper(*level))); err != nil { return config{}, fmt.Errorf("invalid log level %q", *level) }
-	c := config{id: transport.NodeID(*id), raftListen: *raftListen, clientListen: *clientListen, httpListen: *httpListen, otlpEndpoint: *otlp, logLevel: logLevel, installErrorHandler: true, dataDir: *dataDir, raftPeers: make(map[transport.NodeID]string), clientPeers: make(map[transport.NodeID]string), snapshotThreshold: *threshold}
+	c := config{id: transport.NodeID(*id), raftListen: *raftListen, clientListen: *clientListen, httpListen: *httpListen, otlpEndpoint: *otlp, logLevel: logLevel, installErrorHandler: true, dataDir: *dataDir, raftPeers: make(map[transport.NodeID]string), clientPeers: make(map[transport.NodeID]string), snapshotThreshold: *threshold, benchmarkNoFsync: *noFsync}
 	for _, pair := range strings.Split(*peers, ",") {
 		parts := strings.SplitN(pair, "=", 2)
 		if len(parts) != 2 { return config{}, fmt.Errorf("invalid peer %q", pair) }
@@ -84,8 +86,10 @@ func serve(ctx context.Context, c config) (result error) {
 		if result != nil { telemetry.Logger.Error("server stopped", "error", result.Error()) } else { telemetry.Logger.Info("server stopped") }
 	}()
 	telemetry.Logger.Info("server starting", "raft_listen", c.raftListen, "client_listen", c.clientListen, "http_listen", c.httpListen)
+	if c.benchmarkNoFsync { telemetry.Logger.Error("UNSAFE benchmark mode: fsync disabled") }
 	if err := os.MkdirAll(c.dataDir, 0700); err != nil { return err }
-	store, err := raft.OpenDiskStorage(c.dataDir)
+	var store *raft.DiskStorage
+	if c.benchmarkNoFsync { store, err = raft.OpenDiskStorageBenchmarkNoFsync(c.dataDir) } else { store, err = raft.OpenDiskStorage(c.dataDir) }
 	if err != nil { return err }
 	defer func() { result = errors.Join(result, store.Close()) }()
 	peers := make(map[transport.NodeID]string)

@@ -15,4 +15,6 @@ func TestParseConfig(t *testing.T) {
 		if _, err := parseConfig([]string{"-id=1", "-data-dir=data", "-peers="+value}, io.Discard); err == nil { t.Fatalf("accepted %q", value) }
 	}
 	if _, err := parseConfig([]string{"-id=1", "-data-dir=data", "-peers="+peers, "-log-level=verbose"}, io.Discard); err == nil { t.Fatal("accepted invalid log level") }
+	bench, err := parseConfig([]string{"-id=1", "-data-dir=data", "-peers="+peers, "-benchmark-no-fsync"}, io.Discard)
+	if err != nil || !bench.benchmarkNoFsync || c.benchmarkNoFsync { t.Fatalf("benchmark fsync flag: %+v %v", bench, err) }
 }

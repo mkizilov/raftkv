@@ -21,6 +21,7 @@ const (
 )
 
 var ErrStopped = errors.New("raft: node stopped")
+var ErrLogExhausted = errors.New("raft: log index exhausted")
 
 // Config describes a fixed cluster.
 type Config struct {
@@ -113,6 +114,7 @@ func NewNode(config Config) (*Node, error) {
 	if err != nil { return nil, fmt.Errorf("raft: load log: %w", err) }
 	snapshot, err := config.Storage.LoadSnapshot()
 	if err != nil { return nil, fmt.Errorf("raft: load snapshot: %w", err) }
+	if snapshot.Index == ^uint64(0) || uint64(len(log)) >= ^uint64(0)-snapshot.Index { return nil, ErrLogExhausted }
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Node{config: config, initial: hard, initialLog: cloneLog(log), initialSnapshot: cloneSnapshot(snapshot), events: make(chan func(*nodeState), 128), ctx: ctx, cancel: cancel, done: make(chan struct{})}, nil
 }
@@ -211,6 +213,7 @@ func (s *nodeState) observeTerm(term uint64) bool {
 }
 
 func (s *nodeState) elect() {
+	if s.hard.Term == ^uint64(0) { s.err = errors.New("raft: term exhausted"); return }
 	hard := HardState{Term: s.hard.Term + 1, VotedFor: s.node.config.ID, HasVote: true}
 	if !s.persist(hard) { return }
 	s.role = Candidate
@@ -351,6 +354,7 @@ func (n *Node) AppendEntries(ctx context.Context, req transport.AppendEntriesReq
 			for response.ConflictIndex > s.snapshot.Index && s.termAt(response.ConflictIndex-1) == response.ConflictTerm { response.ConflictIndex-- }
 			return response, nil
 		}
+		if uint64(len(req.Entries)) >= ^uint64(0)-req.PrevLogIndex { return response, ErrLogExhausted }
 		for i, entry := range req.Entries {
 			index := req.PrevLogIndex + uint64(i) + 1
 			if index <= s.lastIndex() && s.termAt(index) == entry.Term { continue }

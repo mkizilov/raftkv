@@ -101,3 +101,25 @@ func TestDiskStorageRejectsCorruptState(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil { t.Fatal(err) }
 	if s, err = OpenDiskStorage(dir); err == nil { _ = s.Close(); t.Fatal("accepted corrupt state") }
 }
+
+func TestBenchmarkNoFsyncIsExplicitAndReopens(t *testing.T) {
+	durableDir, benchmarkDir := t.TempDir(), t.TempDir()
+	durable, err := OpenDiskStorage(durableDir)
+	if err != nil { t.Fatal(err) }
+	if durable.noFsync { t.Fatal("default storage unexpectedly disables fsync") }
+	if err := durable.Close(); err != nil { t.Fatal(err) }
+	benchmark, err := OpenDiskStorageBenchmarkNoFsync(benchmarkDir)
+	if err != nil { t.Fatal(err) }
+	if !benchmark.noFsync { t.Fatal("benchmark mode did not disable fsync") }
+	if err := benchmark.Save(HardState{Term: 3, VotedFor: 2, HasVote: true}); err != nil { t.Fatal(err) }
+	entries := []transport.LogEntry{{Term: 3, Command: []byte("entry")}}
+	if err := benchmark.SaveLog(entries); err != nil { t.Fatal(err) }
+	if err := benchmark.Close(); err != nil { t.Fatal(err) }
+	reopened, err := OpenDiskStorageBenchmarkNoFsync(benchmarkDir)
+	if err != nil { t.Fatal(err) }
+	defer reopened.Close()
+	state, err := reopened.Load()
+	if err != nil || state.Term != 3 || state.VotedFor != 2 || !state.HasVote { t.Fatalf("state: %+v %v", state, err) }
+	got, err := reopened.LoadLog()
+	if err != nil || !reflect.DeepEqual(got, entries) { t.Fatalf("log: %+v %v", got, err) }
+}

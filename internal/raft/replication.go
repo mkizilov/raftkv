@@ -14,6 +14,23 @@ func (s *nodeState) termAt(index uint64) uint64 {
 
 func (s *nodeState) lastIndex() uint64 { return s.snapshot.Index + uint64(len(s.log)) }
 
+const maxAppendEntries = 64
+const maxAppendBytes = 1 << 20
+
+// appendBatch groups queued entries while bounding ordinary RPC payloads. A
+// single large entry is sent intact because entries cannot be split by Raft.
+func appendBatch(entries []transport.LogEntry) []transport.LogEntry {
+	count, size := 0, 0
+	for _, entry := range entries {
+		entrySize := len(entry.Command) + 32
+		if count > 0 && (count >= maxAppendEntries || entrySize > maxAppendBytes-size) { break }
+		count++
+		size += entrySize
+		if size >= maxAppendBytes { break }
+	}
+	return cloneLog(entries[:count])
+}
+
 func (s *nodeState) saveLog(entries []transport.LogEntry) bool {
 	if err := s.node.config.Storage.SaveLog(entries); err != nil {
 		s.err = fmt.Errorf("raft: persist log: %w", err)
@@ -42,6 +59,7 @@ func (n *Node) Propose(ctx context.Context, command []byte) (index, term uint64,
 	r, err := call(ctx, n, func(s *nodeState) (startResult, error) {
 		result := startResult{term: s.hard.Term}
 		if s.role != Leader { return result, nil }
+		if s.lastIndex() >= ^uint64(0)-1 { return result, ErrLogExhausted }
 		entries := cloneLog(s.log)
 		entries = append(entries, transport.LogEntry{Term: s.hard.Term, Command: command})
 		if !s.saveLog(entries) { return result, s.err }
@@ -61,7 +79,7 @@ func (s *nodeState) replicate(peer transport.NodeID) {
 	req := transport.AppendEntriesRequest{
 		Term: s.hard.Term, LeaderID: s.node.config.ID,
 		PrevLogIndex: prev, PrevLogTerm: s.termAt(prev),
-		Entries: cloneLog(s.log[prev-s.snapshot.Index:]), LeaderCommit: s.commitIndex,
+		Entries: appendBatch(s.log[prev-s.snapshot.Index:]), LeaderCommit: s.commitIndex,
 	}
 	s.inflight[peer] = true
 	s.node.spawn(func(ctx context.Context) {

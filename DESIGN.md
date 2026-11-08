@@ -183,6 +183,9 @@ backward progress fall back to decrementing `nextIndex`. Current-term
 entries advance the leader's commit index only after a majority replicates them;
 earlier entries become committed indirectly. Followers persist log changes
 before acknowledging them and never overwrite an already committed entry.
+Queued log entries are grouped into batches of at most 64 entries or about
+1 MiB per AppendEntries RPC. An oversized single entry is sent intact; it may
+still exceed the gRPC message limit. Local proposal persistence remains per entry.
 
 The state owner sends copied committed entries in index order on the configured
 apply channel using a selectable send, so a slow or absent consumer does not
@@ -284,7 +287,9 @@ contains a version, term, vote and checksum. A replacement is written to a temp
 file in that directory, synced, renamed over the state file, and followed by a
 directory sync. Log changes append a versioned, checksummed record describing
 the retained prefix and replacement suffix, then sync the log before returning.
-The log file is created and its directory synced on open. On snapshot, a new
+The log file is created and its directory synced on open. The explicitly unsafe
+`-benchmark-no-fsync` flag disables file and directory synchronization for
+measurements only and can lose acknowledged data. On snapshot, a new
 log file containing the image and suffix is synced, atomically renamed over the
 old file, and followed by a directory sync; subsequent mutations append to it.
 This bounds retained disk log history when the service snapshots regularly.
@@ -406,7 +411,8 @@ returns `ErrReadNotReady`; this implementation does not automatically append a
 no-op. Context cancellation aborts the round.
 
 `Server.ReadLatest` uses this barrier, waits for the KV apply loop, and serves
-a fresh read without appending a log entry. It has no client request identity:
+a fresh read without appending a log entry; it is also exposed as an opt-in
+gRPC and Go-client method for benchmarking. It has no client request identity:
 each retry is a new read and can return a newer value. The existing `Get` remains
 log-based and preserves its replicated exactly-once read-result cache. Replacing
 it outright with a read-only quorum round would lose the original result of a

@@ -70,6 +70,10 @@ func TestThreeNodeGRPCCluster(t *testing.T) {
 	response, err := clients[leader].Get(readCtx, &pb.GetRequest{Identity: &pb.RequestIdentity{ClientId: "integration", Sequence: 2}, Key: "key"})
 	stop()
 	if err != nil || response.Value != "value" || response.Version != 1 { t.Fatalf("read: %+v %v", response, err) }
+	fastCtx, stopFast := context.WithTimeout(ctx, 2*time.Second)
+	fast, err := clients[leader].ReadLatest(fastCtx, &pb.ReadLatestRequest{Key: "key"})
+	stopFast()
+	if err != nil || fast.Value != "value" || fast.Version != 1 { t.Fatalf("ReadIndex read: %+v %v", fast, err) }
 	probe := &http.Client{Timeout: time.Second}
 	httpAddress := fmt.Sprintf("http://127.0.0.1:%d", 21866+leader)
 	deadline = time.Now().Add(3*time.Second)

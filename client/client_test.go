@@ -46,6 +46,10 @@ func (s *fakeKV) Status(context.Context, *pb.StatusRequest) (*pb.StatusResponse,
 	return &pb.StatusResponse{NodeId: 2, Role: "leader", Term: 4, CommitIndex: 9, LeaderKnown: true, LeaderId: 2, LeaderAddress: "127.0.0.1:21877", VoterIds: []uint64{1, 2, 3}}, nil
 }
 
+func (s *fakeKV) ReadLatest(_ context.Context, req *pb.ReadLatestRequest) (*pb.KVResponse, error) {
+	return &pb.KVResponse{Value: req.GetKey(), Version: 1, Found: true}, nil
+}
+
 func startFake(t *testing.T, address string, handler *fakeKV) {
 	t.Helper()
 	listener, err := net.Listen("tcp", address)
@@ -74,6 +78,8 @@ func TestRedirectAndLostResponseRetry(t *testing.T) {
 	if err != nil || retry != result { t.Fatalf("retry: %+v %v", retry, err) }
 	states, err := c.Status(ctx)
 	if err != nil || len(states) != 2 || states[1].NodeID != 2 || states[1].Term != 4 || states[1].CommitIndex != 9 || states[1].LeaderAddress != "127.0.0.1:21877" || len(states[1].VoterIDs) != 3 || states[1].VoterIDs[0] != 1 { t.Fatalf("status: %+v %v", states, err) }
+	read, err := c.ReadLatest(ctx, "key")
+	if err != nil || !read.Found || read.Value != "key" || read.Version != 1 { t.Fatalf("ReadLatest: %+v %v", read, err) }
 	leader.mu.Lock()
 	defer leader.mu.Unlock()
 	if leader.writes != 1 || leader.attempts < 3 { t.Fatalf("writes=%d attempts=%d", leader.writes, leader.attempts) }

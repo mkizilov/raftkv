@@ -62,7 +62,10 @@ func TestFastBacktrackingThousands(t *testing.T) {
 				if time.Now().After(deadline) { t.Fatal("follower did not catch up") }
 				time.Sleep(time.Millisecond)
 			}
-			if calls := h.calls.Load(); calls > 3 { t.Fatalf("used %d AppendEntries calls for %d entries", calls, followerLength) }
+			common := 1000
+			if followerLength == 4000 { common = 3000 }
+			maxCalls := 2 + (len(leaderLog)-common+maxAppendEntries-1)/maxAppendEntries
+			if calls := h.calls.Load(); calls > int64(maxCalls) { t.Fatalf("used %d AppendEntries calls for %d entries (limit %d)", calls, followerLength, maxCalls) }
 		})
 	}
 }

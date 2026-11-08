@@ -35,6 +35,7 @@ type DiskStorage struct {
 	ops chan diskOp
 	done chan struct{}
 	closed atomic.Bool
+	noFsync bool
 }
 
 type diskOp struct { fn func(); stop bool }
@@ -47,7 +48,17 @@ func syncDir(dir string) error {
 }
 
 func OpenDiskStorage(dir string) (*DiskStorage, error) {
-	s := &DiskStorage{dir: dir}
+	return openDiskStorage(dir, false)
+}
+
+// OpenDiskStorageBenchmarkNoFsync disables durability and is only for
+// controlled benchmarks. A crash or power loss can lose acknowledged state.
+func OpenDiskStorageBenchmarkNoFsync(dir string) (*DiskStorage, error) {
+	return openDiskStorage(dir, true)
+}
+
+func openDiskStorage(dir string, noFsync bool) (*DiskStorage, error) {
+	s := &DiskStorage{dir: dir, noFsync: noFsync}
 	state, err := os.ReadFile(filepath.Join(dir, "state"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) { return nil, err }
 	if err == nil {
@@ -58,7 +69,7 @@ func OpenDiskStorage(dir string) (*DiskStorage, error) {
 	}
 	s.file, err = os.OpenFile(filepath.Join(dir, "log"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil { return nil, err }
-	if err = syncDir(dir); err == nil { err = s.recoverLog() }
+	if err = s.syncDir(); err == nil { err = s.recoverLog() }
 	if err != nil { _ = s.file.Close(); return nil, err }
 	s.ops = make(chan diskOp)
 	s.done = make(chan struct{})
@@ -70,6 +81,16 @@ func OpenDiskStorage(dir string) (*DiskStorage, error) {
 		}
 	}()
 	return s, nil
+}
+
+func (s *DiskStorage) syncDir() error {
+	if s.noFsync { return nil }
+	return syncDir(s.dir)
+}
+
+func (s *DiskStorage) syncFile(file *os.File) error {
+	if s.noFsync { return nil }
+	return file.Sync()
 }
 
 func diskCall[T any](s *DiskStorage, fn func() (T, error)) (T, error) {
@@ -122,7 +143,7 @@ func (s *DiskStorage) recoverLog() error {
 
 func (s *DiskStorage) trimTail(offset int64) error {
 	if err := s.file.Truncate(offset); err != nil { return err }
-	if err := s.file.Sync(); err != nil { return err }
+	if err := s.syncFile(s.file); err != nil { return err }
 	_, err := s.file.Seek(offset, io.SeekStart)
 	return err
 }
@@ -155,12 +176,12 @@ func (s *DiskStorage) saveState(data []byte) error {
 	name := f.Name()
 	defer os.Remove(name)
 	_, err = io.Copy(f, bytes.NewReader(data))
-	if err == nil { err = f.Sync() }
+	if err == nil { err = s.syncFile(f) }
 	closeErr := f.Close()
 	if err == nil { err = closeErr }
 	if err != nil { return err }
 	if err = os.Rename(name, filepath.Join(s.dir, "state")); err != nil { return err }
-	return syncDir(s.dir)
+	return s.syncDir()
 }
 
 func (s *DiskStorage) LoadLog() ([]transport.LogEntry, error) {
@@ -205,9 +226,9 @@ func (s *DiskStorage) replaceSnapshot(snapshot SnapshotState, entries []transpor
 	name := f.Name()
 	defer os.Remove(name)
 	_, err = io.Copy(f, bytes.NewReader(record))
-	if err == nil { err = f.Sync() }
+	if err == nil { err = s.syncFile(f) }
 	if err == nil { err = os.Rename(name, filepath.Join(s.dir, "log")) }
-	if err == nil { err = syncDir(s.dir) }
+	if err == nil { err = s.syncDir() }
 	if err != nil { _ = f.Close(); s.err = err; return err }
 	old := s.file
 	s.file = f
@@ -224,7 +245,7 @@ func (s *DiskStorage) saveLog(entries []transport.LogEntry) error {
 	record, err := encodeRecord(logMutation{Prefix: uint64(prefix), Entries: entries[prefix:]})
 	if err != nil { return err }
 	_, err = io.Copy(s.file, bytes.NewReader(record))
-	if err == nil { err = s.file.Sync() }
+	if err == nil { err = s.syncFile(s.file) }
 	if err != nil { s.err = err; return err }
 	s.log = cloneLog(entries)
 	return nil
