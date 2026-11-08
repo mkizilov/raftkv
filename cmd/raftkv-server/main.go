@@ -103,13 +103,13 @@ func serve(ctx context.Context, c config) (result error) {
 	defer service.Close()
 	raftListener, err := net.Listen("tcp", c.raftListen)
 	if err != nil { return err }
-	defer raftListener.Close()
+	defer func() { if err := raftListener.Close(); err != nil && !errors.Is(err, net.ErrClosed) { result = errors.Join(result, err) } }()
 	clientListener, err := net.Listen("tcp", c.clientListen)
 	if err != nil { return err }
-	defer clientListener.Close()
+	defer func() { if err := clientListener.Close(); err != nil && !errors.Is(err, net.ErrClosed) { result = errors.Join(result, err) } }()
 	httpListener, err := net.Listen("tcp", c.httpListen)
 	if err != nil { return err }
-	defer httpListener.Close()
+	defer func() { if err := httpListener.Close(); err != nil && !errors.Is(err, net.ErrClosed) { result = errors.Join(result, err) } }()
 	const maxMessage = 64 << 20
 	raftServer := grpc.NewServer(grpc.MaxRecvMsgSize(maxMessage), grpc.MaxSendMsgSize(maxMessage), grpc.ChainUnaryInterceptor(telemetry.Unary), grpc.ChainStreamInterceptor(telemetry.Stream))
 	clientServer := grpc.NewServer(grpc.MaxRecvMsgSize(maxMessage), grpc.MaxSendMsgSize(maxMessage), grpc.ChainUnaryInterceptor(telemetry.Unary), grpc.ChainStreamInterceptor(telemetry.Stream))

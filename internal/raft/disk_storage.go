@@ -40,10 +40,10 @@ type DiskStorage struct {
 
 type diskOp struct { fn func(); stop bool }
 
-func syncDir(dir string) error {
+func syncDir(dir string) (result error) {
 	f, err := os.Open(dir)
 	if err != nil { return err }
-	defer f.Close()
+	defer func() { result = errors.Join(result, f.Close()) }()
 	return f.Sync()
 }
 
@@ -170,11 +170,11 @@ func (s *DiskStorage) save(state HardState) error {
 	return s.err
 }
 
-func (s *DiskStorage) saveState(data []byte) error {
+func (s *DiskStorage) saveState(data []byte) (result error) {
 	f, err := os.CreateTemp(s.dir, ".state-*")
 	if err != nil { return err }
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) { result = errors.Join(result, err) } }()
 	_, err = io.Copy(f, bytes.NewReader(data))
 	if err == nil { err = s.syncFile(f) }
 	closeErr := f.Close()
@@ -216,7 +216,7 @@ func encodeRecord(mutation logMutation) ([]byte, error) {
 	return append(header[:], payload...), nil
 }
 
-func (s *DiskStorage) replaceSnapshot(snapshot SnapshotState, entries []transport.LogEntry) error {
+func (s *DiskStorage) replaceSnapshot(snapshot SnapshotState, entries []transport.LogEntry) (result error) {
 	if s.err != nil { return s.err }
 	if snapshot.Index == 0 || snapshot.Index < s.snapshot.Index { return errors.New("raft: invalid snapshot index") }
 	record, err := encodeRecord(logMutation{Entries: entries, Snapshot: &snapshot})
@@ -224,7 +224,7 @@ func (s *DiskStorage) replaceSnapshot(snapshot SnapshotState, entries []transpor
 	f, err := os.CreateTemp(s.dir, ".log-*")
 	if err != nil { return err }
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) { s.err = errors.Join(s.err, err); result = errors.Join(result, err) } }()
 	_, err = io.Copy(f, bytes.NewReader(record))
 	if err == nil { err = s.syncFile(f) }
 	if err == nil { err = os.Rename(name, filepath.Join(s.dir, "log")) }

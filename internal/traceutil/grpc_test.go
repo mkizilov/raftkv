@@ -12,7 +12,7 @@ import (
 
 func TestUnaryPropagatesTraceAndRequestID(t *testing.T) {
 	provider := sdktrace.NewTracerProvider()
-	defer provider.Shutdown(context.Background())
+	defer func() { if err := provider.Shutdown(context.Background()); err != nil { t.Error(err) } }()
 	ctx, parent := provider.Tracer("test").Start(context.Background(), "parent")
 	defer parent.End()
 	ctx = WithRequestID(ctx, "stable-id")

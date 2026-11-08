@@ -25,7 +25,7 @@ func TestWatchResumesAfterLeaderChange(t *testing.T) {
 	defer cancel()
 	events := make(chan WatchEvent, 8)
 	ended := make(chan error, 1)
-	go func() { ended <- c.servers[leader].Server.Watch(ctx, "app/", 0, func(event WatchEvent) error { events <- event; return nil }) }()
+	go func() { ended <- c.servers[leader].Watch(ctx, "app/", 0, func(event WatchEvent) error { events <- event; return nil }) }()
 	if _, err := c.servers[leader].Put(ctx, "watch-writer", 1, "app/one", "one"); err != nil { t.Fatal(err) }
 	first := watchEvent(t, events)
 	if first.Key != "app/one" || first.Value != "one" || first.Version != 1 || first.Revision == 0 { t.Fatalf("first event: %+v", first) }
@@ -38,7 +38,7 @@ func TestWatchResumesAfterLeaderChange(t *testing.T) {
 	nextLeader := c.leader(t, leader)
 	resumed := make(chan WatchEvent, 8)
 	resumedDone := make(chan error, 1)
-	go func() { resumedDone <- c.servers[nextLeader].Server.Watch(ctx, "app/", first.Revision, func(event WatchEvent) error { resumed <- event; return nil }) }()
+	go func() { resumedDone <- c.servers[nextLeader].Watch(ctx, "app/", first.Revision, func(event WatchEvent) error { resumed <- event; return nil }) }()
 	if _, err := c.servers[nextLeader].Put(ctx, "watch-writer", 2, "other/key", "ignored"); err != nil { t.Fatal(err) }
 	if _, err := c.servers[nextLeader].Put(ctx, "watch-writer", 3, "app/two", "two"); err != nil { t.Fatal(err) }
 	second := watchEvent(t, resumed)
@@ -55,12 +55,12 @@ func TestWatchFallsBehindHistory(t *testing.T) {
 	for i := 1; i <= watchHistoryLimit+1; i++ {
 		if _, err := c.servers[leader].Put(ctx, "writer", uint64(i), "prefix/key", fmt.Sprint(i)); err != nil { t.Fatal(err) }
 	}
-	err := c.servers[leader].Server.Watch(ctx, "prefix/", 0, func(WatchEvent) error { t.Error("delivered event before compacted error"); return nil })
+	err := c.servers[leader].Watch(ctx, "prefix/", 0, func(WatchEvent) error { t.Error("delivered event before compacted error"); return nil })
 	var compacted *CompactedError
 	if !errors.As(err, &compacted) || compacted.Revision == 0 { t.Fatalf("compacted: %v", err) }
 	stop := errors.New("received event")
 	var first WatchEvent
-	err = c.servers[leader].Server.Watch(ctx, "prefix/", compacted.Revision, func(event WatchEvent) error { first = event; return stop })
+	err = c.servers[leader].Watch(ctx, "prefix/", compacted.Revision, func(event WatchEvent) error { first = event; return stop })
 	if !errors.Is(err, stop) || first.Revision <= compacted.Revision { t.Fatalf("retained event: %+v %v", first, err) }
 }
 
@@ -77,7 +77,7 @@ func TestWatchFiltersAndDeduplicatesChanges(t *testing.T) {
 	if _, err := s.Delete(ctx, "writer", 4, "app/key"); err != nil { t.Fatal(err) }
 	stop := errors.New("received two events")
 	var events []WatchEvent
-	err := s.Server.Watch(ctx, "app/", 0, func(event WatchEvent) error {
+	err := s.Watch(ctx, "app/", 0, func(event WatchEvent) error {
 		events = append(events, event)
 		if len(events) == 2 { return stop }
 		return nil
@@ -95,7 +95,7 @@ func TestSlowWatcherFallsBehind(t *testing.T) {
 	defer func() { if !released { close(release) } }()
 	done := make(chan error, 1)
 	go func() {
-		done <- c.servers[leader].Server.Watch(ctx, "app/", 0, func(WatchEvent) error { blocked <- struct{}{}; <-release; return nil })
+		done <- c.servers[leader].Watch(ctx, "app/", 0, func(WatchEvent) error { blocked <- struct{}{}; <-release; return nil })
 	}()
 	if _, err := c.servers[leader].Put(ctx, "writer", 1, "app/key", "first"); err != nil { t.Fatal(err) }
 	select { case <-blocked: case <-time.After(3*time.Second): t.Fatal("watch did not receive first event") }

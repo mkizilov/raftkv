@@ -1,6 +1,6 @@
 # raftkv: project boundaries and working agreement
 
-- Work only in `/Users/mk-rune/test_projects/09-raftkv`. This is one of fourteen independent repositories.
+- Work only within this repository. Treat it as an independent project.
 - Do not read, modify, clean up, or run commands in sibling repositories or the user's configuration.
 - Work autonomously: choose sensible defaults and document assumptions; do not ask questions or delegate.
 - Never install anything globally or use sudo, Homebrew, launchd, host credentials, or host Docker sockets.
@@ -23,5 +23,5 @@
 - The process chaos harness is `go run ./cmd/chaos -duration=10m -seed=20261107`; it owns loopback ports 21800–21844, starts five child servers, and deletes its temporary data after shutdown. It requires generated bindings and a working local Go toolchain.
 - The bounded benchmark matrix is `go run ./cmd/bench -duration=5s -max-ops=20000`; it owns loopback ports 21800–21814 and removes temporary datasets. Its required 16/128-client cases are the explicit benchmark concurrency exception. Never use `-benchmark-no-fsync` with real data.
 - Node telemetry uses `internal/observability` and `internal/traceutil`; metrics and health use the `-http-listen` address. Keep test listeners on loopback in the approved port range and shut down trace exporters and HTTP servers.
-- Initial dependency resolution and `go.sum` generation require a network-accessible Go module proxy. When generated bindings are absent, download the pinned modules and run `go tool buf generate` before `go mod tidy`; then run the checks.
+- Generated protobuf bindings and `go.sum` are tracked. Use `go tool buf generate` and `go mod tidy` after changing the schema or dependencies, and verify the generated files and module graph remain reproducible.
 - Definition of done for each future task: `scripts/check.sh` passes; new code has tests; update `DESIGN.md` if the design changed; give a short summary; make a local conventional-commit Git commit. Report any genuine verification limitations rather than claiming a pass.

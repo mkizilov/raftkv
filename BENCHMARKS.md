@@ -1,21 +1,25 @@
 # Benchmarks
 
-**No throughput or latency measurements are available from this environment.**
-The Go toolchain is absent, the module proxy does not resolve, and generated
-protobuf bindings and dependency checksums are missing. The benchmark command
-was attempted but could not start. Numbers below are deliberately not inferred
-or estimated.
+The full matrix is **incomplete**. On 2026-11-08, a macOS/arm64 run with Go
+1.24.10 and the project-local SDK completed six cases, then failed with
+`context deadline exceeded` in the 3-node, 128-client, fsync-on Put case.
+These six measurements were taken before the later queued-proposal cancellation
+fix and are not a complete or directly comparable result for the final code.
+A focused rerun after that fix still timed out and observed repeated term changes
+under the same high concurrency without injected faults. The precise cause has
+not been established. No values are inferred for the remaining cases.
 
 ## Matrix and results
 
-Each cell requires Put, logged Get, and ReadIndex `ReadLatest` throughput and
-p50/p99 latency. `—` means **not run**, not zero.
+Each cell shows operations/second and p50/p99 latency in milliseconds; latency
+values are histogram upper bounds. `—` means **not run**, not zero. `*` means
+the 20,000-operation cap ended the case before the five-second target.
 
 | Nodes | Concurrent clients | fsync | Put ops/s; p50/p99 | Get ops/s; p50/p99 | ReadIndex ops/s; p50/p99 |
 | ---: | ---: | :---: | :--- | :--- | :--- |
-| 3 | 1 | on | — | — | — |
-| 3 | 16 | on | — | — | — |
-| 3 | 128 | on | — | — | — |
+| 3 | 1 | on | 80.00; 11.7/33.7 | 82.25; 11.9/23.0 | 4,417.89; 0.2/0.8* |
+| 3 | 16 | on | 290.28; 60.9/97.0 | 230.69; 71.7/101.8 | 17,933.17; 0.8/2.5* |
+| 3 | 128 | on | deadline exceeded | — | — |
 | 3 | 1 | off | — | — | — |
 | 3 | 16 | off | — | — | — |
 | 3 | 128 | off | — | — | — |
@@ -58,11 +62,13 @@ always uses fsync. Never use the unsafe mode for real data.
 
 AppendEntries batches queued suffix entries, up to 64 entries or approximately
 1 MiB per RPC; it does not batch the local fsync for individual proposals.
-At higher concurrency, batching may reduce replication RPC overhead, while
+The completed cases show ReadIndex substantially faster than logged Get in
+this particular short run, with both ReadIndex cases stopping at the operation
+cap. At higher concurrency, batching may reduce replication RPC overhead, while
 fsync and state-machine work can still dominate. Fsync-off is not a durability
 equivalent and its effect depends on the filesystem and OS cache. Logged Get
 participates in deduplication and returns the original result on retries;
 ReadIndex avoids a read log entry but retries are independent reads. Their
 contracts differ, so throughput differences are not a free, equivalent speedup.
-No conclusion about the direction or magnitude of any effect is claimed until
-the matrix is actually run.
+No conclusion about fsync cost, 128-client throughput, or general performance
+is justified by this incomplete single run.

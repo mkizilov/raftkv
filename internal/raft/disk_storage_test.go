@@ -29,7 +29,7 @@ func TestDiskStorageRestartAndTornTail(t *testing.T) {
 	if err = f.Close(); err != nil { t.Fatal(err) }
 	s, err = OpenDiskStorage(dir)
 	if err != nil { t.Fatal(err) }
-	defer s.Close()
+	defer func() { if err := s.Close(); err != nil { t.Error(err) } }()
 	got, err := s.Load()
 	if err != nil || got != hard { t.Fatalf("state %+v, %v", got, err) }
 	log, err := s.LoadLog()
@@ -81,7 +81,7 @@ func TestDiskStorageSurvivesProcessExit(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil { t.Fatalf("child: %v: %s", err, out) }
 	s, err := OpenDiskStorage(dir)
 	if err != nil { t.Fatal(err) }
-	defer s.Close()
+	defer func() { if err := s.Close(); err != nil { t.Error(err) } }()
 	hard, err := s.Load()
 	if err != nil || hard.Term != 9 || !hard.HasVote || hard.VotedFor != 2 { t.Fatalf("state %+v, %v", hard, err) }
 	entries, err := s.LoadLog()
@@ -117,7 +117,7 @@ func TestBenchmarkNoFsyncIsExplicitAndReopens(t *testing.T) {
 	if err := benchmark.Close(); err != nil { t.Fatal(err) }
 	reopened, err := OpenDiskStorageBenchmarkNoFsync(benchmarkDir)
 	if err != nil { t.Fatal(err) }
-	defer reopened.Close()
+	defer func() { if err := reopened.Close(); err != nil { t.Error(err) } }()
 	state, err := reopened.Load()
 	if err != nil || state.Term != 3 || state.VotedFor != 2 || !state.HasVote { t.Fatalf("state: %+v %v", state, err) }
 	got, err := reopened.LoadLog()

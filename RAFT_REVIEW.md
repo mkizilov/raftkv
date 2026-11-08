@@ -1,10 +1,11 @@
 # Raft Figure 2 static review
 
 This is a source review against [Figure 2 of the Raft paper](https://raft.github.io/raft.pdf),
-not a proof or a test result. Figure 2 excludes snapshots and membership changes.
-The Go toolchain, generated protobuf bindings, race tests and chaos runs were
-unavailable in this environment, so none of the observations below are validated
-by execution. References name the implementation responsible for each rule.
+not a proof. Figure 2 excludes snapshots and membership changes. The baseline
+build and race suite now pass with locally generated protobuf bindings, including
+the short chaos smoke test; that does not establish all properties below. See
+`README.md` and `ROADMAP.md` for verification status. References name the
+implementation responsible for each rule.
 
 ## State and rules, line by line
 
@@ -40,8 +41,14 @@ by execution. References name the implementation responsible for each rule.
   A corrupted or truncated *first* snapshot-containing record can be discarded
   as a torn tail; distinguishing post-commit corruption from an incomplete
   append requires additional durable framing. This has not been fixed or tested.
+* A 3-node, 128-client, fsync-on write benchmark exceeded its five-second
+  operation deadline and showed repeated term changes without injected faults.
+  Discarding canceled queued proposals reduces unnecessary work but did not
+  resolve the reproduced timeout; the underlying liveness cause is unconfirmed.
 * The published transport is plaintext and unauthenticated. Figure 2 assumes
   non-Byzantine peers, not hostile or misconfigured nodes.
-* No conclusion is drawn about untested races, liveness under partitions, or
-  linearizability. Run the race suite, Porcupine tests and ten-minute chaos test
-  after restoring the local toolchain and generated bindings.
+* The baseline race and Porcupine tests pass. A ten-minute five-node chaos run
+  with seed `20261107` checked 2,025 operations and returned `Ok` before the
+  queued-proposal cancellation fix; the final code has only repeated the short
+  smoke test. These do not prove liveness or linearizability. Extended runs
+  remain separate verification work; see `ROADMAP.md`.

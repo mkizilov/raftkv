@@ -28,7 +28,7 @@ import (
 func TestMetricsHealthLogsAndTrace(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-	defer provider.Shutdown(context.Background())
+	defer func() { if err := provider.Shutdown(context.Background()); err != nil { t.Error(err) } }()
 	var logs bytes.Buffer
 	tm := New(7, 0, &logs, provider)
 	tm.RaftState(raft.Status{Term: 4, Role: raft.Leader, CommitIndex: 9, LeaderKnown: true, LeaderID: 7})
@@ -90,7 +90,7 @@ func TestLogLevelAndLeaderTransitions(t *testing.T) {
 func TestGRPCRequestTracesThroughCommit(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-	defer provider.Shutdown(context.Background())
+	defer func() { if err := provider.Shutdown(context.Background()); err != nil { t.Error(err) } }()
 	var logs bytes.Buffer
 	tm := New(1, 0, &logs, provider)
 	network := transport.NewNetwork(1)

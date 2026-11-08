@@ -22,6 +22,7 @@ type proxy struct {
 	done chan struct{}
 	acceptDone chan struct{}
 	acceptErr error
+	connErr error
 	workers sync.WaitGroup
 }
 
@@ -44,10 +45,10 @@ func (p *proxy) accept() {
 }
 
 func (p *proxy) handle(in net.Conn) {
-	defer in.Close()
+	defer p.closeConn(in)
 	out, err := net.DialTimeout("tcp", p.target, 500*time.Millisecond)
 	if err != nil { return }
-	defer out.Close()
+	defer p.closeConn(out)
 	pair := &connectionPair{inbound: in, outbound: out}
 	p.mu.Lock()
 	if p.blocked { p.mu.Unlock(); return }
@@ -55,11 +56,19 @@ func (p *proxy) handle(in net.Conn) {
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.active, pair); p.mu.Unlock() }()
 	done := make(chan struct{})
-	go func() { p.copy(out, in); _ = out.Close(); _ = in.Close(); close(done) }()
+	go func() { p.copy(out, in); p.closeConn(out); p.closeConn(in); close(done) }()
 	p.copy(in, out)
-	_ = in.Close()
-	_ = out.Close()
+	p.closeConn(in)
+	p.closeConn(out)
 	<-done
+}
+
+func (p *proxy) closeConn(conn net.Conn) {
+	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		p.mu.Lock()
+		p.connErr = errors.Join(p.connErr, err)
+		p.mu.Unlock()
+	}
 }
 
 func (p *proxy) copy(dst io.Writer, src io.Reader) {
@@ -84,7 +93,7 @@ func (p *proxy) setBlocked(blocked bool) {
 	var pairs []*connectionPair
 	if blocked { for pair := range p.active { pairs = append(pairs, pair) } }
 	p.mu.Unlock()
-	for _, pair := range pairs { _ = pair.inbound.Close(); _ = pair.outbound.Close() }
+	for _, pair := range pairs { p.closeConn(pair.inbound); p.closeConn(pair.outbound) }
 }
 
 func (p *proxy) setDelay(delay time.Duration) {
@@ -99,7 +108,7 @@ func (p *proxy) close() error {
 	close(p.done)
 	p.setBlocked(true)
 	p.workers.Wait()
-	return errors.Join(err, p.acceptErr)
+	return errors.Join(err, p.acceptErr, p.connErr)
 }
 
 func wait(ctx context.Context, duration time.Duration) bool {

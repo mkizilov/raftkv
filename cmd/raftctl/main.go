@@ -27,7 +27,7 @@ func run(ctx context.Context, args []string, output, errorOutput io.Writer) (run
 	sequence := flags.Uint64("sequence", 0, "request sequence to use with -client-id")
 	after := flags.Uint64("after-revision", 0, "watch cursor (exclusive)")
 	if err := flags.Parse(args); err != nil { return err }
-	if *timeout < 0 || flags.NArg() == 0 { return errors.New("usage: raftctl [flags] get|put|delete|cas|status|member|bench|watch ...") }
+	if *timeout < 0 || flags.NArg() == 0 { return errors.New("usage: raftctl [flags] get|put|delete|cas|status|member|bench|watch") }
 	command, values := flags.Arg(0), flags.Args()[1:]
 	if *sequence > 0 && *clientID == "" { return errors.New("-sequence requires -client-id") }
 	if *clientID != "" && *sequence == 0 && command != "status" && command != "member" && command != "watch" { return errors.New("-client-id requires a positive -sequence") }

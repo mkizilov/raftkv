@@ -13,7 +13,7 @@ func TestRequestSpanIncludesCommitEvents(t *testing.T) {
 	leader := c.leader(t, -1)
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-	defer provider.Shutdown(context.Background())
+	defer func() { if err := provider.Shutdown(context.Background()); err != nil { t.Error(err) } }()
 	ctx, cancel := deadline(t)
 	defer cancel()
 	ctx, span := provider.Tracer("test").Start(ctx, "put")

@@ -123,7 +123,7 @@ func TestDiskSnapshotReplacesOldLog(t *testing.T) {
 	if err := store.Close(); err != nil { t.Fatal(err) }
 	store, err = OpenDiskStorage(dir)
 	if err != nil { t.Fatal(err) }
-	defer store.Close()
+	defer func() { if err := store.Close(); err != nil { t.Error(err) } }()
 	snapshot, err := store.LoadSnapshot()
 	if err != nil || snapshot.Index != 79 || snapshot.Term != 1 || string(snapshot.Data) != "image" { t.Fatalf("snapshot %+v, %v", snapshot, err) }
 	suffix, err := store.LoadLog()

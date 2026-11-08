@@ -58,6 +58,7 @@ func (n *Node) Propose(ctx context.Context, command []byte) (index, term uint64,
 	command = append([]byte(nil), command...)
 	r, err := call(ctx, n, func(s *nodeState) (startResult, error) {
 		result := startResult{term: s.hard.Term}
+		if err := ctx.Err(); err != nil { return result, err }
 		if s.role != Leader { return result, nil }
 		if s.lastIndex() >= ^uint64(0)-1 { return result, ErrLogExhausted }
 		entries := cloneLog(s.log)

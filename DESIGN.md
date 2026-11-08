@@ -32,10 +32,8 @@ Run it and the backtracking tests repeatedly with
 Generate the Go bindings under `gen/` with `go tool buf generate`; the Buf
 template runs the pinned `protoc-gen-go` and `protoc-gen-go-grpc` through
 `go tool`. `scripts/check.sh` generates bindings before building and testing.
-The bindings and `go.sum` have not been generated in this checkout: the local
-Go toolchain is unavailable and the module proxy could not be resolved. Install
-the pinned toolchain and download the pinned modules inside this repository,
-generate the bindings, and resolve checksums before building or running tests.
+The generated bindings and `go.sum` are tracked. A pinned project-local Go
+toolchain and accessible module proxy were used to regenerate and verify them.
 The runtime uses one reusable connection per peer, inherits caller deadlines,
 and applies an additional RPC timeout. Raft and KV listen on separate addresses.
 
@@ -109,9 +107,11 @@ the preserved temporary directory are reported.
 isolated container, with no Docker socket or host ports mounted. The image is
 pinned by digest and uses project-local caches; it is a reproducible variant,
 not a five-container distributed deployment. Docker execution is unverified in
-this sandbox because host Docker access is forbidden. The required ten-minute
-native chaos run also remains unverified until the local Go toolchain and
-generated protobuf bindings are available.
+this sandbox because host Docker access is forbidden. The three-second native
+chaos smoke test passes. Before the queued-proposal cancellation fix, a
+ten-minute run with seed `20261107` completed in 10m4.138s with 2,025
+operations, 373 injected faults and a Porcupine `Ok` verdict; the final code
+has not repeated that ten-minute run. This does not establish general correctness.
 
 ## Observability
 
@@ -172,7 +172,9 @@ higher term, so clients must not treat its role alone as a linearizable lease.
 
 `Start(command)` appends a copied command on the leader and returns its index,
 term, and leadership status without waiting for commit; `Propose` additionally
-accepts a context and reports errors. Application-level client responses must
+accepts a context and reports errors. A proposal canceled while still queued is
+discarded before persistence; cancellation after processing starts remains
+ambiguous and can still commit. Application-level client responses must
 wait for commitment and application. Each leader has at most one AppendEntries
 RPC in flight per follower; failures retry on the next heartbeat. For an
 inconsistent previous entry, the follower returns the conflicting term and its

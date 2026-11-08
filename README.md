@@ -1,19 +1,18 @@
 # RaftKV
 
 RaftKV is a work-in-progress replicated configuration store with a Raft
-implementation written in this repository. **It is not production-ready:** the
-Go toolchain and module proxy were unavailable in the implementation sandbox,
-so generated protobuf bindings, `go.sum`, builds, race tests, linearizability
-checks and chaos tests remain unverified. See [ROADMAP.md](ROADMAP.md) for
+implementation written in this repository. **It is not production-ready:**
+the baseline build, race tests, vet and lint pass, but important storage,
+security and membership limitations remain. See [ROADMAP.md](ROADMAP.md) for
 priorities and estimates, [RAFT_REVIEW.md](RAFT_REVIEW.md) for known deviations,
 and [BENCHMARKS.md](BENCHMARKS.md) for measurement status.
 
 | Status | Evidence |
 | --- | --- |
-| Implemented in source | Fixed-membership Raft, KV, gRPC/client, snapshots, Watch, observability and test/benchmark harnesses. These are not verified to build or run. |
+| Implemented and baseline-tested | Fixed-membership Raft, KV, gRPC/client, snapshots, Watch and observability. The race suite includes simulated faults, Porcupine histories, gRPC integration, a leader-process kill and a three-second chaos smoke test. A ten-minute five-node chaos run also passed for one seed before the later queued-proposal cancellation fix. |
 | Partially implemented | `ReadLatest` is an opt-in ReadIndex API; `Get` still logs reads. Membership listing is fixed-set only; add/remove and learners are absent. Watch cannot list a prefix for full re-read. |
-| Verified | Shell syntax, Compose/provisioning YAML, dashboard JSON and targeted repository hygiene checks only. |
-| Unverified or not run | Generated bindings/checksums, all Go tests and binaries, gRPC/process integration, Porcupine/chaos acceptance, benchmark measurements, Docker and OTLP export. |
+| Verified | `scripts/check.sh` and an uncached `go test -race -count=1 -timeout=2m ./...` passed on macOS/arm64 with Go 1.24.10 and a project-local SDK. Shell syntax, YAML, dashboard JSON and targeted repository hygiene checks also passed. |
+| Unverified or incomplete | Production readiness, power-loss durability, multi-seed extended fault testing, the benchmark matrix, Docker and OTLP export. The 3-node/128-client fsync-on write benchmark timed out with repeated term changes; see `BENCHMARKS.md`. Passing tests are not a proof of consensus safety. |
 
 ```mermaid
 flowchart LR
@@ -47,14 +46,21 @@ flowchart LR
 
 Use Go 1.24.10 and the project's pinned tools and caches; do not install tools
 globally. All temporary files, downloaded modules and toolchains must remain in
-this repository. With a network-accessible module proxy and a project-local Go:
+this repository. Generated protobuf bindings and `go.sum` are tracked. With a
+network-accessible module proxy and a project-local Go in `PATH`:
 
 ```sh
-GOFLAGS="${GOFLAGS:-} -mod=mod" go tool buf generate
+go mod download all
+go tool buf generate
 go mod tidy
 scripts/check.sh
 scripts/local-cluster.sh
 ```
+
+The verification environment used `PATH="$PWD/.toolchain/go/bin:$PATH"` and
+`SDKROOT="$PWD/.toolchain/MacOSX.sdk"`; the SDK was copied from the installed
+read-only macOS Command Line Tools into this repository. The supplied `HOME`,
+`TMPDIR`, Go caches and two-worker `GOFLAGS` were left unchanged.
 
 The cluster script runs three processes on 127.0.0.1 ports 21800–21808, keeps
 data in a temporary project-local directory, and removes it on exit. In a
@@ -85,9 +91,19 @@ gRPC process tests, snapshots and restart tests. The process chaos harness is:
 go run ./cmd/chaos -duration=10m -seed=20261107
 ```
 
-Its results are not verified here. The optional Compose configurations and
+On 2026-11-08, seed `20261107` completed in 10m4.138s with 2,025 operations,
+373 injected faults and a Porcupine `Ok` verdict. This was before the later
+queued-proposal cancellation fix; the final code passed the short chaos smoke
+test but has not repeated that ten-minute run. One run is not a proof.
+Further fault testing is tracked in [ROADMAP.md](ROADMAP.md). The optional Compose configurations and
 Grafana dashboard are documented in [DESIGN.md](DESIGN.md); Docker-dependent
 checks were not run because access to the host daemon is prohibited.
 
 The benchmark-only `-benchmark-no-fsync` flag disables durability and can lose
 acknowledged writes. It must never be used for real data.
+
+## License
+
+[MIT](LICENSE), copyright 2026 Mykyta Kizilov. The module path currently uses
+`github.com/you/raftkv`; it must be changed consistently when the publication
+destination is known. No remote repository has been created by this project.

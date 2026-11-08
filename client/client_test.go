@@ -89,7 +89,7 @@ func TestRetryRespectsDeadlineAndSequences(t *testing.T) {
 	startFake(t, "127.0.0.1:21879", &fakeKV{block: true})
 	c, err := New(Config{Endpoints: []string{"127.0.0.1:21879"}, ClientID: "test", RPCTimeout: 40 * time.Millisecond})
 	if err != nil { t.Fatal(err) }
-	defer c.Close()
+	t.Cleanup(func() { if err := c.Close(); err != nil { t.Error(err) } })
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	_, err = c.Put(ctx, "key", "value")
