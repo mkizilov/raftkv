@@ -47,7 +47,7 @@ Follower client requests return gRPC `FailedPrecondition` with a
 address is empty before a leader is known and is only a best-effort hint during
 partitions. Clients must retry safely with the same identity and sequence.
 `scripts/local-cluster.sh` builds and runs three loopback nodes on ports
-21800–21805, removes its temporary data on exit, and stops all three on Ctrl-C.
+21800–21808, removes its temporary data on exit, and stops all three on Ctrl-C.
 The integration test binds loopback ports 21860–21868.
 
 This transport currently uses plaintext, unauthenticated gRPC and is intended
@@ -412,7 +412,8 @@ no-op. Context cancellation aborts the round.
 
 `Server.ReadLatest` uses this barrier, waits for the KV apply loop, and serves
 a fresh read without appending a log entry; it is also exposed as an opt-in
-gRPC and Go-client method for benchmarking. It has no client request identity:
+gRPC and Go-client method for benchmarking. An empty key is rejected as an
+invalid client argument. It has no client request identity:
 each retry is a new read and can return a newer value. The existing `Get` remains
 log-based and preserves its replicated exactly-once read-result cache. Replacing
 it outright with a read-only quorum round would lose the original result of a

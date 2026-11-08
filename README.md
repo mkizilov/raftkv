@@ -4,8 +4,16 @@ RaftKV is a work-in-progress replicated configuration store with a Raft
 implementation written in this repository. **It is not production-ready:** the
 Go toolchain and module proxy were unavailable in the implementation sandbox,
 so generated protobuf bindings, `go.sum`, builds, race tests, linearizability
-checks and chaos tests remain unverified. See [RAFT_REVIEW.md](RAFT_REVIEW.md)
-for known deviations and [BENCHMARKS.md](BENCHMARKS.md) for measurement status.
+checks and chaos tests remain unverified. See [ROADMAP.md](ROADMAP.md) for
+priorities and estimates, [RAFT_REVIEW.md](RAFT_REVIEW.md) for known deviations,
+and [BENCHMARKS.md](BENCHMARKS.md) for measurement status.
+
+| Status | Evidence |
+| --- | --- |
+| Implemented in source | Fixed-membership Raft, KV, gRPC/client, snapshots, Watch, observability and test/benchmark harnesses. These are not verified to build or run. |
+| Partially implemented | `ReadLatest` is an opt-in ReadIndex API; `Get` still logs reads. Membership listing is fixed-set only; add/remove and learners are absent. Watch cannot list a prefix for full re-read. |
+| Verified | Shell syntax, Compose/provisioning YAML, dashboard JSON and targeted repository hygiene checks only. |
+| Unverified or not run | Generated bindings/checksums, all Go tests and binaries, gRPC/process integration, Porcupine/chaos acceptance, benchmark measurements, Docker and OTLP export. |
 
 ```mermaid
 flowchart LR

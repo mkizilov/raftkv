@@ -31,6 +31,7 @@ func (g *GRPC) response(ctx context.Context, r Result, err error) (*pb.KVRespons
 		if detailErr != nil { return nil, status.Error(codes.Internal, detailErr.Error()) }
 		return nil, detail.Err()
 	case errors.Is(err, ErrInvalidRequest): return nil, status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, ErrInvalidKey): return nil, status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, ErrRequestConflict): return nil, status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, ErrVersionExhausted): return nil, status.Error(codes.OutOfRange, err.Error())
 	case errors.Is(err, raft.ErrReadNotReady): return nil, status.Error(codes.Unavailable, err.Error())

@@ -19,6 +19,7 @@ var (
 	ErrRequestConflict = errors.New("kv: client sequence reused for a different request")
 	ErrVersionExhausted = errors.New("kv: key version exhausted")
 	ErrInvalidRequest = errors.New("kv: client ID, positive sequence and key are required")
+	ErrInvalidKey = errors.New("kv: key is required")
 )
 
 // Result describes the value and version after an operation. Deleted keys
@@ -145,7 +146,7 @@ func (s *Server) Get(ctx context.Context, client string, sequence uint64, key st
 // ReadLatest is a linearizable read without a client request identity. Unlike
 // Get, retries are independent reads and do not return a cached prior result.
 func (s *Server) ReadLatest(ctx context.Context, key string) (Result, error) {
-	if key == "" { return Result{}, errors.New("kv: key is required") }
+	if key == "" { return Result{}, ErrInvalidKey }
 	index, _, err := s.node.ReadIndex(ctx)
 	if errors.Is(err, raft.ErrNotLeader) { return Result{}, ErrNotLeader }
 	if err != nil { return Result{}, err }
