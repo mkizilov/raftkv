@@ -8,12 +8,15 @@ import (
 	"github.com/you/raftkv/internal/transport"
 )
 
+var ErrSnapshotOutdated = errors.New("raft: snapshot index is already compacted")
+
 // Snapshot discards entries up to an already applied index. The service must
 // supply its complete state after applying that index.
 func (n *Node) Snapshot(index uint64, data []byte) error {
 	data = append([]byte(nil), data...)
 	_, err := call(context.Background(), n, func(s *nodeState) (struct{}, error) {
-		if index <= s.snapshot.Index || index > s.lastApplied || s.pendingSnapshot != nil { return struct{}{}, errors.New("raft: snapshot index must be applied and newer than the current snapshot") }
+		if index <= s.snapshot.Index { return struct{}{}, ErrSnapshotOutdated }
+		if index > s.lastApplied || s.pendingSnapshot != nil { return struct{}{}, errors.New("raft: snapshot index must be applied") }
 		snapshot := SnapshotState{Index: index, Term: s.termAt(index), Data: data}
 		suffix := cloneLog(s.log[index-s.snapshot.Index:])
 		if err := s.node.config.Storage.SaveSnapshot(snapshot, suffix); err != nil {

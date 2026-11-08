@@ -1,2 +1,2 @@
-// Package kv will implement the replicated configuration state machine.
+// Package kv implements a Raft-backed replicated configuration state machine.
 package kv

@@ -1,8 +1,8 @@
 # RaftKV design
 
 This document specifies the intended implementation. Election, log replication,
-and file-backed storage exist, but production networking and the client API do
-not yet. Raft will
+file-backed storage, and an in-process replicated KV API exist, but production
+networking and a network client API do not yet. Raft will
 be implemented in this repository, not with an existing Raft implementation.
 The protocol below follows Figure 2 of the [Raft paper](https://raft.github.io/raft.pdf).
 
@@ -88,6 +88,38 @@ The service must restore that image before processing subsequent messages and
 must create a snapshot only after applying its index. An image may be replayed
 after restart; commit and application positions after the snapshot are volatile.
 
+## KV state machine
+
+`internal/kv.Server` owns a Raft node and its apply stream. Register its node
+with the transport, then start the server. `Get`, `Put`, `Delete`, and
+`CompareAndSwap` all enter the Raft log, including reads; a response is returned
+only after the matching request has been committed and applied. Context expiry
+is ambiguous: the command may still commit, so retry with the same identity and
+arguments. A disconnected former leader cannot serve a new local read without
+committing it. This is an in-process API; transport-facing client RPCs are not
+yet implemented.
+
+Every request includes a nonempty client ID and a positive, increasing sequence
+number. The replicated state stores the original command and result for every
+client/sequence pair, including reads and failed CAS operations. A retry returns
+the original result without executing again; reuse with different arguments is
+an error. Entries are retained indefinitely, which supports delayed retries but
+requires a future client-session garbage-collection policy to bound memory.
+Clients must persist their IDs and sequence numbers and must not reuse a pair for
+another operation. Keys start at version zero. Put and Delete always increment
+the version, including deletion of an absent key; tombstones retain versions to
+prevent ABA on recreation. CompareAndSwap writes only when the current version
+matches, including a tombstone's version, and increments on success. A version
+overflow is rejected deterministically.
+
+The KV snapshot contains values, tombstone versions, all deduplication records,
+and the applied index. When the retained Raft log exceeds the configured
+threshold of logical command bytes plus eight bytes per term, the service
+snapshots after applying an entry. Zero disables automatic snapshots. Restoring
+the image precedes subsequent apply messages, preserving deduplication through
+leader changes and restarts. Snapshot size can still grow with retained client
+history and is subject to Raft's record-size limit.
+
 ## Disk storage and recovery
 
 `OpenDiskStorage` requires an existing, exclusively owned directory; concurrent
@@ -166,21 +198,20 @@ last new entry when `leaderCommit` is greater.
   than the current commit index when a majority have `matchIndex >= N` and
   the entry at N is from the current term.
 
-## Planned client API and consistency
+## Client API and consistency
 
 * `Get(key)` returns the current value or a not-found result.
 * `Put(key, value)` stores a value; `Delete(key)` removes a key.
-* `CompareAndSwap(key, expected, replacement)` atomically replaces a value only
-  when the current value matches the expectation, and reports success or failure.
+* `CompareAndSwap(key, expectedVersion, replacement)` atomically replaces a value
+  only when its current version matches, and reports success or failure.
 * `Watch` streams committed changes to selected keys; precise selection, resume,
   and backpressure semantics will be specified when the API is implemented.
 
 Reads and writes are intended to be linearizable: each completed operation
 appears to take effect at a single point between invocation and response,
 respecting real-time ordering. Writes, including compare-and-swap decisions,
-are ordered through the replicated log. Reads must confirm current leadership
-with a quorum and wait until the relevant committed state is applied, or use an
-equivalent Raft-safe mechanism; a leader's local state alone is insufficient.
+are ordered through the replicated log. Reads also commit through the log; a
+leader's local state alone is insufficient.
 Watch events reflect applied committed log order; this does not by itself make a
 watch stream a linearizable read. Failure and retry semantics remain to be
 specified with the implementation.

@@ -36,6 +36,7 @@ type Status struct {
 	Term uint64
 	Role Role
 	CommitIndex uint64
+	LogBytes uint64
 }
 
 type ApplyMsg struct {
@@ -104,6 +105,9 @@ func NewNode(config Config) (*Node, error) {
 
 // Run starts the state owner once, after the handler has been registered.
 func (n *Node) Run() { n.start.Do(func() { go n.run() }) }
+
+// Done closes when the node's state owner exits.
+func (n *Node) Done() <-chan struct{} { return n.done }
 
 // Stop cancels outstanding RPCs and waits for the owner and workers to exit.
 func (n *Node) Stop() {
@@ -259,7 +263,11 @@ func call[T any](ctx context.Context, n *Node, fn func(*nodeState) (T, error)) (
 }
 
 func (n *Node) Status(ctx context.Context) (Status, error) {
-	return call(ctx, n, func(s *nodeState) (Status, error) { return Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex}, nil })
+	return call(ctx, n, func(s *nodeState) (Status, error) {
+		var size uint64
+		for _, entry := range s.log { size += uint64(len(entry.Command)) + 8 }
+		return Status{Term: s.hard.Term, Role: s.role, CommitIndex: s.commitIndex, LogBytes: size}, nil
+	})
 }
 
 func (n *Node) RequestVote(ctx context.Context, req transport.RequestVoteRequest) (transport.RequestVoteResponse, error) {
