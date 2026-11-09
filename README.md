@@ -104,6 +104,4 @@ acknowledged writes. It must never be used for real data.
 
 ## License
 
-[MIT](LICENSE), copyright 2026 Mykyta Kizilov. The module path currently uses
-`github.com/you/raftkv`; it must be changed consistently when the publication
-destination is known. No remote repository has been created by this project.
+[MIT](LICENSE), copyright 2026 Mykyta Kizilov.
